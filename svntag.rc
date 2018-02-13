@@ -1,0 +1,3 @@
+svntags=svn+ssh://odo.dwds.de/home/svn/dev/dstar-ddc-timeseries/tags
+tagprefix=dstar-ddc-timeseries
+

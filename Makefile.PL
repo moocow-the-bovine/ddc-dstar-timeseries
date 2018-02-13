@@ -21,7 +21,10 @@ WriteMakefile
 
 		    ##-- for outlier pruning
 		    'PDL' => 0,			#v2.017
-		    'PD::Stats'=>0,		#v0.70
+		    'PDL::Stats'=>0,		#v0.70
+
+		    ##-- for testing
+		    'Test::More'=>0,		#v1.302075
 		   },
 
    EXE_FILES    => [],
