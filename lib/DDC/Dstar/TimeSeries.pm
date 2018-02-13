@@ -273,7 +273,7 @@ sub serverTimestamp {
   if ($ts->{cacheUseInfo}) {
     ##-- use most recent 'indexed' entry for server 'info' request (slower, ca. 300 q/s)
     my $stamp = '1970-01-01T00:00:00Z';
-    my @q     = ( ddcRequest('info') );
+    my @q     = ( $ts->ddcRequest('info') );
     my ($c);
     while (defined($c=shift(@q))) {
       $stamp = $c->{indexed} if ($c->{indexed} && $c->{indexed} gt $stamp);
