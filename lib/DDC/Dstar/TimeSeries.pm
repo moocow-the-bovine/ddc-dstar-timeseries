@@ -626,7 +626,7 @@ sub plotInitialize {
       $ymin = (sort {$a<=>$b} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
     }
     if (($ymax//'') =~ /^\*?$/) {
-      ensureCache();
+      $ts->ensureCache();
       $ymax = (sort {$b<=>$a} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
     }
   }
