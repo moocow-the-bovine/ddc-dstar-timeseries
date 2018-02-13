@@ -1,0 +1,1133 @@
+##-*- Mode: CPerl; coding: utf-8; -*-
+##
+## File: DDC/Dstar/TimeSeries.pm
+## Author: Bryan Jurish <jurish@bbaw.de>
+## Description: class for DDC-based time series histograms ("Wortverläufe")
+##==============================================================================
+
+package DDC::Dstar::TimeSeries;
+use DDC::Client::Distributed;
+#use DDC::Dstar::TimeSeries::Outliers;
+
+use File::Basename qw(basename dirname);
+use Fcntl;
+use JSON;
+use POSIX qw(strftime);
+#use Storable;
+use File::Temp;
+
+use Encode qw(decode_utf8 encode_utf8);
+use version;
+use strict;
+
+##==============================================================================
+## Globals
+
+##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
+our $VERSION = 0.38;
+
+##==============================================================================
+## Constructors etc.
+
+##----------------------------------------------------------------------
+## $ts = DDC::Dstar::TimeSeries->new(%opts)
+##  + %$ts, %opts:
+##    (
+##     ##-- dstar configuration
+##     prog => $prog,           ##-- program name for error reporting
+##     dstar => {               ##-- common dstar configuration options
+##      server_host => $host,   ##   - DDC server host
+##      server_port => $port,   ##   - DDC server port
+##      corpus => $corpus,      ##   - DDC corpus label
+##      hist_enabled => $bool,  ##   - histograms enabled?
+##     },
+##     timeout => $timeout,     ##-- DDC client timeout (seconds)
+##     limit => $limit,         ##-- DDC client limit (number of rows)
+##     ##
+##     ##-- plot parameters
+##     ymin => $ymin,           ##-- minimum date (year)
+##     ymax => $ymax,           ##-- maximum date
+##     ##
+##     ##-- low-level options
+##     debug => $bool,          ##-- debug mode?
+##     useGenre => $bool,       ##-- auto-detect genres even if @genres is not set?
+##     cacheFile => $file,      ##-- JSON file to load/store cache (undef=always update)
+##     cacheMinAge => $secs,    ##-- minimum cache age for auto-update (in seconds, e.g. 60*60*24*7 ~ 1 week; undef=no minimum)
+##     cacheUseInfo => $bool,   ##-- use slower but more reliable server 'info' request to get server timestamp? (default=0)
+##     textClassKey => $key,    ##-- ddc-indexed textClass meta-attribute
+##     textClassU => $uclass,   ##-- "universal" genre for single-plot or grand-average mode
+##     xBarClass => $xclass,    ##-- long x-bar class for bare plots
+##     gpVersion => $version,   ##-- underlying gnuplot version string (output of `gnuplot --version`)
+##     gpVersionFile => $file,  ##-- filename to cache gnuplot version (undef=don't cache ~ 14ms overhead)
+##     gpVersionTTL => $secs,   ##-- max age of gpVersionFile for cache-read (default=60*60*24 = 1 day)
+##     ##
+##     ##-- guts
+##     genres => \@genres,      ##-- genres to plot
+##     client => $client,       ##-- underlying DDC::Client object
+##     cache => \%cache,        ##-- global count-cache ( "${date}\t${class}" => $TOTAL, ... )
+##     vars => \%vars,          ##-- parsed CGI request
+##    )
+sub new {
+  my $that = shift;
+  return bless({
+		##-- dstar options
+		prog => basename($0),
+		dstar => {
+			  server_host => '127.0.0.1',
+			  server_port => '52000',
+			  corpus => 'corpus',
+			  hist_enabled => 'yes',
+			 },
+		timeout => 300,
+		limit => 16384,
+
+		##-- plot parameters
+		ymin => undef,
+		ymax => undef,
+
+		##-- low-level options
+		debug => 0,
+		useGenre => 1,
+		cacheFile => (dirname($0)."/dhist-cache.json"),
+		cacheMinAge => undef,
+		cacheUseInfo => 0,
+		textClassKey => 'textClass',
+		textClassU => 'Gesamt',
+		xBarClass => '__XBARS__',
+
+		##-- guts
+		genres => [],
+		client => undef,
+		cache => undef,
+		gpVersion => undef,
+		gpVersionFile => (dirname($0)."/gpversion.txt"),
+		gpVersionTTL => (60*60*24),
+
+		##-- user args
+		@_
+	       },
+	       ref($that)||$that);
+}
+
+##----------------------------------------------------------------------
+## undef = $ts->DESTROY()
+##  + destructor removes tmpfile if defined
+sub DESTROY {
+  my $tmpfile = $_[0]{vars} ? $_[0]{vars}{tmpfile} : undef;
+  unlink($tmpfile) if (defined($tmpfile) && -e $tmpfile);
+}
+
+##----------------------------------------------------------------------
+## $ts = $ts->loadConfig($rcfile)
+##  + loads configuration from $rcfile
+##  + hack uses a temporary package for backwards-compatibility with monolithic dhist-plot.perl
+sub loadConfig {
+  my ($ts,$rcfile) = @_;
+
+  if (-r $rcfile) {
+    no strict qw(vars refs);
+    package DDC::Dstar::TimeSeries::Config;
+    do $rcfile or die(__PACKAGE__, "::loadConfig(): failed to load '$rcfile': $@");
+
+    my ($sym,$ref);
+    foreach $sym (keys %DDC::Dstar::TimeSeries::Config::) {
+      if     ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{HASH}) )   { $ts->{$sym} = $ref; }
+      elsif  ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{ARRAY}) )  { $ts->{$sym} = $ref; }
+      elsif  ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{CODE}) )   { $ts->{$sym} = $ref; }
+      elsif  ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{SCALAR}) ) { $ts->{$sym} = $$ref; }
+    }
+    %DDC::Dstar::TimeSeries::Config:: = qw(); ##-- clear temporary stash
+  }
+
+  return $ts;
+}
+
+##==============================================================================
+## Subs: DDC client
+
+##----------------------------------------------------------------------
+## $client = $ts->ensureClient(%opts)
+sub ensureClient {
+  my $ts = shift;
+  if (!$ts->{client}) {
+    $ts->{client} = DDC::Client::Distributed->new(
+						  connect => {PeerAddr=>$ts->{dstar}{server_host},PeerPort=>$ts->{dstar}{server_port}},
+						  mode    => 'raw',
+						  start    => 0,
+						  limit    => $ts->{limit},
+						  timeout  => $ts->{timeout},
+						  encoding => 'utf8',
+						 )
+      or die(__PACKAGE__, "::ensureClient(): could not create DDC client: $!");
+  }
+  if (@_) {
+    my %args = @_;
+    @{$ts->{client}}{keys %args} = values(%args);
+  }
+  return $ts->{client};
+}
+
+##----------------------------------------------------------------------
+## $responseData = $ts->requestData($ddcRequest,%opts)
+sub ddcRequest {
+  my ($ts,$reqstr,%opts) = @_;
+  my $client = $ts->ensureClient(%opts);
+  print STDERR __PACKAGE__, "::ddcRequest($client->{connect}{PeerAddr}:$client->{connect}{PeerPort}): $reqstr\n" if ($ts->{debug});
+  my $rsp  = $client->queryRaw($reqstr)
+    or die(__PACKAGE__, "::ddcRequest(): no response to request `$reqstr'");
+  return from_json($rsp,{utf8=>(utf8::is_utf8($rsp) ? 0 : 1)});
+}
+
+##----------------------------------------------------------------------
+## $responseData = $ts->ddcCounts($ddcQueryConditions, %ddcClientOpts)
+sub ddcCounts {
+  my ($ts,$qconds,%opts) = @_;
+
+  ## Mon, 15 Feb 2016 13:54:09 +0100 moocow
+  ##  + #has[textClass,/REGEX/] queries are expensive (~1600 slower than without)
+  ##  + eliminate them here & parse requested genres elsewhere!
+  #my $gconds = (@genres && $textClassKey ? (" #has[${textClassKey},/^(?:".join('|',@genres).")\\b/]") : '');
+
+  my $gkey = ($ts->{useGenre} && $ts->{textClassKey} ? "$ts->{textClassKey}~s/:.*//" : "@\'$ts->{textClassU}'");
+  my $qstr = "count($qconds #sep) #by[date/1,$gkey]"; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
+  $ts->ensureClient(mode=>'json', %opts);
+  print STDERR __PACKAGE__, "::ddcCounts($ts->{client}{connect}{PeerAddr}:$ts->{client}{connect}{PeerPort}): $qstr\n" if ($ts->{debug});
+  my $rsp  = $ts->{client}->queryRaw($qstr)
+    or die(__PACKAGE__, "::ddcCounts(): no response to count-query `$qstr'");
+  my $data = from_json($rsp,{utf8=>(utf8::is_utf8($rsp) ? 0 : 1)});
+  die (__PACKAGE__, "::ddcCounts(): error during count-query `$qstr': ", ($data->{error_}//'(unknown error)'))
+    if (($data->{istatus_}//0)!=0 || ($data->{nstatus_}//0)!=0 || $data->{error_});
+
+  #print STDERR "-> ", to_json($data,{canonical=>1,utf8=>1,pretty=>1}) if ($ts->{debug});
+  return $data;
+}
+
+##==============================================================================
+## Subs: gnuplot version
+
+## $gpVersionString = $ts->gpVersionString()
+##  + gets full gnuplot version string
+sub gpVersionString {
+  my $ts = shift;
+  return $ts->{gpVersion} if (defined($ts->{gpVersion}));
+
+  my ($gpver,$cached);
+  if ($ts->{gpVersionFile} && -r $ts->{gpVersionFile}) {
+    if ($ts->file_mtime($ts->{gpVersionFile}) >= (time()-$ts->{gpVersionTTL})) {
+      $ts->cachedebug("fetching gnuplot version from cache-file $ts->{gpVersionFile}\n") if ($ts->{debug});
+      open(my $fh, "<$ts->{gpVersionFile}")
+	or warn(__PACKAGE__, "::gpVersionString(): failed to open $ts->{gpVersionFile}: $!");
+      $gpver  = <$fh> if ($fh);
+      $cached = 1;
+    } else {
+      $ts->cachedebug("stale gnuplot version cache $ts->{gpVersionFile}",
+		      " (mtime~", $ts->fileTimestamp($ts->{gpVersionFile}),
+		      " < min~", $ts->timestamp(time()-$ts->{gpVersionTTL}),
+		      ")\n") if ($ts->{debug});
+      $cached = 0;
+    }
+  }
+  if (!$gpver) {
+    $ts->cachedebug("fetching gnuplot version from gnuplot\n");
+    $gpver  = `gnuplot --version`;
+    $cached = 0;
+  }
+  if ($gpver) {
+    chomp($gpver);
+    $ts->cachedebug("found gnuplot version string = \"$gpver\"\n");
+  }
+
+  ##-- store cached version
+  if ($gpver && !$cached && $ts->{gpVersionFile}) {
+    $ts->cachedebug("caching gnuplot version to $ts->{gpVersionFile}\n");
+    open(my $fh, ">$ts->{gpVersionFile}")
+      or warn(__PACKAGE__, "::gpVersionString(): failed to open $ts->{gpVersionFile}: $!");
+    print $fh $gpver, "\n";
+    close($fh)
+      or warn(__PACKAGE__, "::gpVersionString(): failed to close $ts->{gpVersionFile}: $!");
+  }
+
+  ##-- return
+  return $ts->{gpVersion} = $gpver;
+}
+
+## $gpVersion = $ts->gpVersion()
+##  + gets major gnuplot version (numbers + dots), returned as a version object (or just string if unparseable)
+sub gpVersion {
+  my $ts = shift;
+  my $gpver = $ts->gpVersionString or return undef;
+  return version->parse($1) if ($gpver =~ /([0-9\.\-]+)/);
+  return $gpver;
+}
+
+
+##==============================================================================
+## Subs: cached scaling constants
+
+##----------------------------------------------------------------------
+## $timestamp = $ts->serverTimestamp()
+##  + returns server timestamp as a string (via 'status' request)
+sub serverTimestamp {
+  my $ts = shift;
+
+  if ($ts->{cacheUseInfo}) {
+    ##-- use most recent 'indexed' entry for server 'info' request (slower, ca. 300 q/s)
+    my $stamp = '1970-01-01T00:00:00Z';
+    my @q     = ( ddcRequest('info') );
+    my ($c);
+    while (defined($c=shift(@q))) {
+      $stamp = $c->{indexed} if ($c->{indexed} && $c->{indexed} gt $stamp);
+      push(@q, @{$c->{corpora}}) if ($c->{corpora});
+    }
+    return $stamp;
+  } else {
+    ##-- use server start timestamp (faster but less reliable, ca. 1200 q/s)
+    return $ts->ddcRequest("status")->{started};
+  }
+}
+
+##----------------------------------------------------------------------
+## $time = CLASS_OR_OBJECT->file_mtime($file)
+sub file_mtime {
+  my $that  = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  return (stat($_[0]))[9] // 0;
+}
+
+##----------------------------------------------------------------------
+## $timestamp = CLASS_OR_OBJECT->fileTimestamp($file)
+sub fileTimestamp {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  return $that->timestamp($that->file_mtime($_[0]))
+}
+
+##----------------------------------------------------------------------
+## $timestamp = CLASS_OR_OBJECT->timestamp()
+## $timestamp = CLASS_OR_OBJECT->timestamp($time)
+sub timestamp {
+  my $that  = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  return POSIX::strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(@_ ? $_[0] : qw()));
+}
+
+##----------------------------------------------------------------------
+## $bool = CLASS_OR_OBJECT->saveCache(\%cache,$cachefile)
+sub saveCache {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my ($cache,$file) = @_;
+  #return Storable::nstore($cache,$file);
+  open(my $fh,">$file") or die(__PACKAGE__, "::saveCache(): open failed for $file: $!");
+  print $fh to_json($cache, {ascii=>1,pretty=>1});
+  close $fh;
+}
+
+##----------------------------------------------------------------------
+## \%cache = CLASS_OR_OBJECT->loadCache($cachefile)
+sub loadCache {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my $file = shift;
+  #return Storable::retrieve($cachefile);
+
+  open(my $fh,"<$file") or die(__PACKAGE__, "::loadCache(): open failed for $file: $!");
+  local $/=undef;
+  my $buf = <$fh>;
+  close $fh;
+
+  return from_json($buf, {utf8=>1});
+}
+
+##----------------------------------------------------------------------
+## undef = $ts->cachedebug(@msg)
+##  + verbose cache debugging
+sub cachedebug {
+  my $ts = shift;
+  if ($ts->{debug}) {
+    print STDERR __PACKAGE__, " \[CACHEDEBUG]: ", @_;
+  }
+  return;
+}
+
+##----------------------------------------------------------------------
+## \%cache = $ts->ensureCache()
+sub ensureCache {
+  my $ts = shift;
+  return $ts->{cache} if (defined($ts->{cache}));
+  my $cachefile = $ts->{cacheFile};
+  my $cache_stamp      = $ts->fileTimestamp($cachefile);
+  my $cache_ripe_stamp = $ts->timestamp(time() - ($ts->{cacheMinAge}//0));
+  my ($server_stamp);
+
+  $ts->cachedebug("cache:$cache_stamp ; ripe:$cache_ripe_stamp\n");
+
+  if ( -r $cachefile && !-w $cachefile ) {
+    ##-- read-only cache file: just load it
+    $ts->cachedebug("read-only cache (stamp:$cache_stamp)\n");
+  }
+  elsif ( -r $cachefile && (-s $cachefile) && $cache_stamp ge $cache_ripe_stamp ) {
+    ##-- cache file not yet old enough for update: just load it
+    $ts->cachedebug("cache not yet ripe (cache:$cache_stamp > ripe:$cache_ripe_stamp)\n");
+  }
+  elsif ( !(-r $cachefile) || !(-s $cachefile) || $cache_stamp lt ($server_stamp=$ts->serverTimestamp()) ) {
+    ##-- stale cache file: update it
+    $server_stamp //= '(unknown)';
+    print STDERR __PACKAGE__, "::ensureCache(): cache update required (cache:$cache_stamp < server:$server_stamp)\n";
+    my $data = $ts->ddcCounts("*");
+    die (__PACKAGE__, "::ensureCache(): error during cache-update query: ", ($data->{error_}//($@||'(unknown error)')))
+      if (!$data || ($data->{istatus_}//0)!=0 || ($data->{nstatus_}//0)!=0 || $data->{error_});
+
+    ##-- populate cache data
+    my $cache = {};
+    my %classes = @{$ts->{genres}} ? (map {($_=>undef)} @{$ts->{genres}}) : qw();
+    foreach (@{$data->{counts_}}) {
+      $_->[2] //= '';
+      $_->[2] =~ s/:.*//;
+      next if (($ts->{useGenre} && $_->[2] eq '') || (@{$ts->{genres}} && !exists($classes{$_->[2]})));
+      $cache->{"$_->[1]\t$_->[2]"} += $_->[0];
+    }
+
+    ##-- store cache file
+    if (!saveCache($cache,$cachefile)) {
+      warn(__PACKAGE__, "::ensureCache(): failed to store cache to $cachefile: $!");
+    } else {
+      print STDERR __PACKAGE__, "::ensureCache(): cache updated (new cache timestamp = ", $ts->fileTimestamp($cachefile), ")\n";
+    }
+    return $ts->{cache} = $cache;
+  }
+
+  if (!$ts->{cache}) {
+    ##-- just load cache-file
+    $ts->cachedebug("re-loading cache data (cache~$cache_stamp ; server~".($server_stamp//'undef').")\n");
+    $ts->{cache} = $ts->loadCache($cachefile)
+      or die(__PACKAGE__, "::ensureCache(): failed to retrieve cache data from $cachefile: $!");
+  }
+  return $ts->{cache};
+}
+
+##==============================================================================
+## Subs and Data: Parameters
+
+##----------------------------------------------------------------------
+## %defaults: parameter defaults
+my %defaults =
+  (
+   query=>'',		##-- target query (aka "lemma")
+   slice=>'10',		##-- slice width (years) or (years+offset)
+   offset=>'',		##-- slice offset (empty uses xrange)
+   norm=>'abs',		##-- normalization mode
+   logproj=>0,		##-- do log-linear projection?
+   logavg=>0,		##-- do log-linear smoothing?
+   window=>0,		##-- moving-average smoothing window width (slices)
+   wbase=>0,		##-- inverse-distance smoothing base
+   totals=>0,		##-- plot totals?
+   single=>0,		##-- plot single-curve only (true) or each genre separatately (false)?
+   grand=>0,		##-- include grand-average curve (implied by single=1)?
+   gaps=>0,		##-- allow gaps for missing (zero) values?
+   prune=>0,		##-- inverse confidence level for outlier detection (0: no pruning, .05 ~ 95% confidence level)
+   pformat=>'png',	##-- target plot format qw(text json gnuplot png ...)
+
+   ##-- gnuplot-only options
+   xlabel => 'date',
+   ylabel => '',    ##-- default: from plot data
+   xrange => "*:*",
+   yrange => "0:*",
+   logscale => 0,
+   title => '',  ##-- default: auto
+   size   => '640,480',  ##-- plot size (w,h)
+   key    => '', #'outside right center box', ##-- legend; 'off' or 'none' to supporess
+   smooth => 'none', #qw(none bezier csplines)
+   style  => 'l',    #qw(lines points linespoints)
+   grid   => 0,	     ##-- plot grid?
+   bare   => 0,     ##-- produce "bare" curve for web display?
+
+   ##-- json-only options
+   pretty => 0,
+
+   ##-- debugging options
+   debug => 0,
+  );
+
+##----------------------------------------------------------------------
+## %aliases: parameter aliases
+my %aliases =
+  (
+   query=>[qw(query qu q lemma lem l)],
+   slice=>[qw(sliceby slice sl s)],
+   offset=>[qw(offset off)],
+   norm=>[qw(normalize norm n)],
+   logproj=>[qw(logproject logp lp)],
+   logavg=>[qw(logavg loga la lognorm logn log ln)],
+   window=>[qw(window win w)],
+   wbase=>[qw(wbase wb W)],
+   totals=>[qw(totals tot T)],
+   single=>[qw(single sing sg)],
+   grand=>[qw(grand gr g)],
+   gaps=>[qw(gaps gap)],
+   prune=>[qw(prune pr)],
+   pformat=>[qw(pformat pfmt pf format fmt f)],
+
+   ##-- gnuplot-only options
+   xlabel=>[qw(xlabel xlab xl)],
+   ylabel=>[qw(ylabel ylab yl)],
+   xrange=>[qw(xrange xr)],
+   yrange=>[qw(yrange yr)],
+   logscale=>[qw(logscale lscale ls logy ly)],
+   size=>[qw(psize psiz psz size siz sz)],
+   key=>[qw(key legend leg)],
+   smooth => [qw(smooth sm)], #qw(none bezier csplines)
+
+   ##-- json only options
+   pretty => [qw(pretty)],
+  );
+
+##----------------------------------------------------------------------
+## %pformats: known plot-formats
+my %pformats =
+  (
+   null=>{label=>'null',header=>{-type=>'text/plain'},charset=>'utf-8'},
+   json=>{label=>'json',header=>{-type=>'application/json'}, charset=>'utf-8'},
+   text=>{label=>'text',header=>{-type=>'text/plain'}, charset=>'utf-8'},
+   gnuplot=>{label=>'gnuplot',header=>{-type=>'text/plain'}, charset=>'utf-8'},
+   png=>{label=>'png',header=>{-type=>'image/png'},term=>'png size $SIZE'},
+   svg=>{label=>'svg',header=>{-type=>'image/svg+xml'},term=>'svg size $SIZE'},
+   eps=>{label=>'eps',header=>{-type=>'application/postscript',-attachment=>'dhist-plot.eps'},term=>'postscript eps color'},
+   ps=>{label=>'ps',header=>{-type=>'application/postscript',-attachment=>'dhist-plot.ps'},term=>'postscript color'},
+   pdf=>{label=>'pdf',header=>{-type=>'application/pdf'},term=>'pdf color'},
+   epsmono=>{label=>'eps',header=>{-type=>'application/postscript',-attachment=>'dhist-plot.eps'},term=>'postscript eps mono'},
+   psmono=>{label=>'psmono',header=>{-type=>'application/postscript',-attachment=>'dhist-plot.ps'},term=>'postscript mono'},
+   pdfmono=>{label=>'pdf',header=>{-type=>'application/pdf'},term=>'pdfcairo mono'},
+  );
+$pformats{postscript} = $pformats{ps};
+$pformats{$_}=$pformats{text} foreach (qw(txt tab tsv csv dat));
+$pformats{gp}=$pformats{gnuplot};
+
+##----------------------------------------------------------------------
+## \%vars = $ts->parseRequest(\%vars)
+##  + parses request in \%vars (usually { CGI::Vars() })
+##  + may destructively alter \%vars, sets $ts->{vars}=\%vars
+sub parseRequest {
+  my ($ts,$vars) = @_;
+
+  ##-- low-level variables
+  $ts->{timeout} = $vars->{timeout} if ($vars->{timeout});
+  $ts->{debug}   = $vars->{debug} if ($vars->{debug});
+
+  ##-- sanitize vars
+  foreach (keys %$vars) {
+    next if (!defined($vars->{$_}));
+    my $tmp = $vars->{$_};
+    $tmp =~ s/\x{0}//g;
+    eval {
+      ##-- try to decode utf8 params e.g. "%C3%B6de" for "öde"
+      $tmp = decode_utf8($tmp,1) if (!utf8::is_utf8($tmp) && utf8::valid($tmp));
+    };
+    if ($@) {
+      ##-- decoding failed; treat as bytes (e.g. "%F6de" for "öde")
+      utf8::upgrade($tmp);
+      undef $@;
+    }
+    $vars->{$_} = $tmp;
+  }
+
+  ##-- parameter aliases
+  my ($vkey,$akey);
+  foreach $vkey (keys %aliases) {
+    if (defined($akey = (grep {exists($vars->{$_})} @{$aliases{$vkey}})[0])) {
+      $vars->{$vkey} = $vars->{$akey};
+      next;
+    }
+  }
+
+  ##-- adopt vars
+  $ts->{vars} = $vars;
+  return $vars;
+}
+
+##==============================================================================
+## Subs: miscellaneous
+
+##----------------------------------------------------------------------
+## $max = CLASS_OR_OBJECT->rowmax($key,\@rows)
+##  + returns max $_->{$key} foreach (@$rows), or -inf if none
+sub rowmax {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my ($key,$rows) = @_;
+  my $max = '-inf';
+  foreach (@$rows) {
+    $max = $_->{$key} if (defined($_->{$key}) && $_->{$key} > $max);
+  }
+  return $max;
+}
+
+##----------------------------------------------------------------------
+## $min = CLASS_OR_OBJECT->rowmin($key,\@rows)
+##  + returns min $_->{$key} foreach (@$rows), or inf if none
+sub rowmin {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my ($key,$rows) = @_;
+  my $min = 'inf';
+  foreach (@$rows) {
+    $min = $_->{$key} if (defined($_->{$key}) && $_->{$key} < $min);
+  }
+  return $min;
+}
+
+
+##==============================================================================
+## Subs: guts
+
+##----------------------------------------------------------------------
+## $data = $ts->plot()
+## $data = $ts->plot(\%vars)
+##  + wrapper for plotInitialize(), plotFetchCounts(), ...
+##  + if \%vars is defined, calls parseRequest() first
+sub plot {
+  my $ts = shift;
+  $ts->parseRequest(@_) if (@_);
+  $ts->plotInitialize();
+  $ts->plotFetchCounts();
+  $ts->plotFill();
+  $ts->plotNormalize();
+  $ts->plotPrune();
+  $ts->plotSmooth();
+  $ts->plotCollect();
+  return $ts->plotContent();
+}
+
+##----------------------------------------------------------------------
+## $ts = $ts->plotInitialize()
+##  + sets variable defaults, initializes local state
+sub plotInitialize {
+  my $ts = shift;
+  my $vars = ($ts->{vars} //= {});
+  $ts->cachedebug("plotInitialize()\n");
+
+  ##-- variable defaults
+  $vars->{prune} = 0.05 if ($vars->{bare} && ($vars->{prune}//'') eq ''); ##-- default prune=.05 for 'bare' plots
+  $vars->{$_} = $ts->{defaults}{$_} foreach (grep {($vars->{$_}//'') eq ''} keys %{$ts->{defaults}//{}}); ##-- in case e.g. local.rc overrides %defaults
+  $vars->{$_} = $defaults{$_}       foreach (grep {($vars->{$_}//'') eq ''} keys %defaults);
+
+  ##-- dump vars (debug)
+  print STDERR "$ts->{prog} variables: ".JSON::to_json($vars,{utf8=>0,pretty=>1})."\n" if ($ts->{debug});
+
+  ##-- variable-dependent conveniences
+  $vars->{sliceby} = do { no warnings 'numeric'; ($vars->{slice}+0); };
+  $vars->{grand} ||= $vars->{single} || !$ts->{textClassKey};
+  $vars->{smooth}  = ($vars->{smooth} =~ /^(?:no?(?:ne)?)?$/ ? '' : $vars->{smooth});
+  $vars->{pfmt}    = $pformats{$vars->{pformat}//''};
+  die(__PACKAGE__, "::plotInitialize(): unknown plot-format '$vars->{pformat}'") if (!defined($vars->{pfmt}));
+
+  ##-- range variables
+  my ($xrmin,$xrmax) = map {$_//''} split(/:/, ($vars->{xrange}||'*:*'), 2);
+  my ($xumin,$xumax) = map {$_||'*'} ($xrmin,$xrmax); ##-- user x-range request
+  my ($ymin,$ymax)   = @$ts{qw(ymin ymax)};
+  if (!defined($ymin) || !defined($ymax)) {
+    $ymin //= $xrmin;
+    $ymax //= $xrmax;
+    if (($ymin//'') =~ /^\*?$/) {
+      $ts->ensureCache();
+      $ymin = (sort {$a<=>$b} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
+    }
+    if (($ymax//'') =~ /^\*?$/) {
+      ensureCache();
+      $ymax = (sort {$b<=>$a} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
+    }
+  }
+  $xrmin=$ymin if ($xumin eq '*');
+  $xrmax=$ymax if ($xumax eq '*');
+  $ts->cachedebug("computed ymin=$ymin , ymax=$ymax (xrmin=$xrmin , xrmax=$xrmax)\n");
+  @$vars{qw(xrmin xrmax xumin xumax ymin ymax)} = ($xrmin,$xrmax, $xumin,$xumax, $ymin,$ymax);
+
+  ##-- parse slice, offset
+  if ($vars->{slice} =~ m{^\s*([+-]?[0-9]+)\s*([\s+-]\s*[0-9]+)\s*}) {
+    $vars->{sliceby} = $1;
+    $vars->{offset}  = $2 if (($vars->{offset}//'') eq '');
+  }
+
+  ##-- guess default offset if user specified non-trivial range
+  $vars->{offset} ||= $xumin ne '*' ? ($xumin % $vars->{sliceby}) : 0;
+  $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset}\n");
+
+  ##-- genre variables
+  if (!@{$ts->{genres}//[]}) {
+    $ts->ensureCache();
+    my %genres = (map {(split(/\t/,$_))[1]=>undef} keys %{$ts->{cache}});
+    $ts->{genres} = [grep {($_//'') ne ''} sort keys %genres];
+  }
+  $vars->{grand} ||= !@{$ts->{genres}};
+
+  ##-- smoothing constants (from cache)
+  my ($sliceby,$offset) = @$vars{qw(sliceby offset)};
+  my $sliceof = $vars->{sliceof} = sub { $sliceby==0 ? 0 : int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
+
+  my @classes = (@{$ts->{genres}} && $ts->{textClassKey} ? (grep {($_//'') ne ''} map {split(/[,\t]+/,$_)} @{$ts->{genres}}) : $ts->{textClassU});
+  my %dc2f = qw();
+  my %c2f = qw();
+  my %d2f = qw();
+  my $f_corpus = 0;
+  my $cache = $ts->ensureCache();
+  my ($class,$date,$val);
+  foreach $class (@classes) {
+    foreach $date ($ymin..$ymax) {
+      next if (!($val = $cache->{"$date\t$class"}));
+      next if ($date < $xrmin || $date > $xrmax); ##-- ensure date restrictions are applied (redundant if iterating ymin..ymax?)
+      $dc2f{ $sliceof->($date)."\t".$class } += $val;
+      $d2f{ $sliceof->($date) } += $val;
+      $c2f{ $class } += $val;
+      $f_corpus += $val;
+    }
+  }
+  @$vars{qw(classes dc2f c2f d2f f_corpus)} = (\@classes, \%dc2f, \%c2f, \%d2f, $f_corpus);
+
+  ##-- get list of all slices
+  my @slices = ($vars->{gaps}
+		? (sort {$a<=>$b} keys(%d2f))	 			    	   ##-- instantiated only
+		: ($sliceby==0 ? (0)
+		   : map {$_*$sliceby+$offset} (int(($xrmin-$offset)/$sliceby)..int(($xrmax-$offset)/$sliceby))) ##-- for "gaps=0" (mantis bug #7562)
+	       );
+  $vars->{slices} = \@slices;
+
+  return $ts;
+}
+
+##----------------------------------------------------------------------
+## \%rawCounts = $ts->plotFetchCounts()
+##  + fetches raw plot counts into $ts->{vars}{counts} = { "${year}\t${class}" => $freq, ... }
+##  + requires $ts->plotInitialize()
+sub plotFetchCounts {
+  my $ts = shift;
+
+  ##-- variables
+  my $vars = $ts->{vars};
+  my ($query,$sliceof,$xrmin,$xrmax,$c2f,$d2f) = @$vars{qw(query sliceof xrmin xrmax c2f d2f)};
+
+  ##-- real guts: acquire & scan ddc histogram data
+  my %counts = qw();
+  my $f_query   = 0;
+  if ($vars->{totals}) {
+    ##-- plot totals
+    %counts = %{$ts->{dc2f}};
+    $f_query += $_ foreach (values %counts);
+  } else {
+    ##-- plot nontrivial counts
+    my $data = $ts->ddcCounts($query); #$ts->ddcCounts(autoExpandQuery($query));
+    my $minslice = $sliceof->($xrmin);
+    my ($val,$kdate,$kclass,$kslice);
+    foreach (@{$data->{counts_}}) {
+      ($val,$kdate,$kclass) = map {$_//''} @$_[0..2];
+      $kclass =~ s/:.*//;                             ##-- class-name trimming here should be redundant, we include it for extra paranoia
+      next if (!exists($c2f->{$kclass}));             ##-- ignore "unknown" classes in count response
+      next if ($kdate < $xrmin || $kdate > $xrmax);   ##-- apply date restrictions if requested
+      $kslice = $sliceof->($kdate);
+      next if ($kslice < $minslice || !exists $d2f->{$sliceof->($kdate)} || !exists($c2f->{$kclass}));
+      $counts{$sliceof->($kdate)."\t".$kclass} += $val;
+      $f_query += $val;
+    }
+  }
+
+  return $vars->{counts} = \%counts;
+}
+
+##----------------------------------------------------------------------
+## \%rawCounts = $ts->plotFill()
+##  + gets plot grand-averages if applicable
+##  + fills plot gaps if requested
+##  + adjusts @{$vars->{classes}}, sets %{$vars->{classesh}}
+sub plotFill {
+  my $ts = shift;
+  my $vars = $ts->{vars};
+  my $UCLASS = $ts->{textClassU};
+  my ($counts,$dc2f,$c2f) = @$vars{qw(counts dc2f c2f)};
+
+  ##-- guts: grand-average
+  if ($vars->{grand} && @{$ts->{genres}} && $ts->{textClassKey}) {
+    my ($key);
+    foreach (keys %$counts) {
+      ($key=$_) =~ s/(?<=\t).*$/$UCLASS/;
+      $counts->{$key} += $counts->{$_};
+    }
+    foreach (keys %$dc2f) {
+      ($key=$_) =~ s/(?<=\t).*$/$UCLASS/;
+      $dc2f->{$key} += $dc2f->{$_};
+    }
+    foreach (keys %$c2f) {
+      $c2f->{$UCLASS} += $c2f->{$_};
+    }
+    push(@{$ts->{classes}},$UCLASS);
+  }
+
+  ##-- guts: fill gaps
+  if (!$vars->{gaps}) {
+    my ($class,$date);
+    foreach $class (@{$vars->{classes}}) {
+      foreach $date (@{$vars->{slices}}) {
+	$counts->{"$date\t$class"} += 0;
+      }
+    }
+  }
+
+  ##-- adjust @classes according to user request
+  @{$vars->{classes}} = ($UCLASS) if ($vars->{single});
+  $vars->{classesh} = { map {($_=>undef)} @{$vars->{classes}} };
+
+  return $counts;
+}
+
+##----------------------------------------------------------------------
+## \%normCounts = $ts->plotNormalize()
+##  + normalizes counts in $ts->{vars}{counts}
+##  + saves pre-normalization counts in $ts->{vars}{countsRaw}
+sub plotNormalize {
+  my $ts = shift;
+  my $vars = $ts->{vars};
+
+  my ($counts,$norm,$dc2f,$d2f,$c2f,$f_corpus) = @$vars{qw(counts norm dc2f d2f c2f f_corpus)};
+  my ($logproj,$gaps) = @$vars{qw(logproj gaps)};
+
+  ##-- normalize
+  $vars->{countsRaw} = { %$counts };
+  my $normsub = undef; ##-- $inverse_scaling_factor = $normsub->($key, $kdate, $kclass)
+  if ($norm =~ /^(?:abs|none)?$/) {
+    $norm    = 'abs';
+  } elsif ($norm =~ /^(?:date[\+\-\,\s]?class|dc)$/ && !$vars->{totals}) {
+    $norm    = 'date+class';
+    $normsub = sub { $dc2f->{"$_[1]\t$_[2]"} };
+  } elsif ($norm =~ /^(?:date[\+\-\,]?class|dc)$/ &&  $vars->{totals}) {
+    $norm    = 'abs';
+  } elsif ($norm =~ /^(?:d|date)$/) {
+    $norm    = 'date';
+    $normsub = sub { $d2f->{$_[1]} };
+  } elsif ($norm =~ /^(?:textclass|tc|class|c|genre|g)$/) {
+    $norm    = 'class';
+    $normsub = sub { $c2f->{$_[2]} };
+  } elsif ($norm =~ /^(?:corpus|C|full|N)$/) {
+    $norm    = 'corpus';
+    $normsub = sub { $f_corpus };
+  } else {
+    warn(__PACKAGE__, "::plotNormalize(): unknown normalization mode '$norm' - using absolute frequency");
+    $norm = 'abs';
+  }
+  $vars->{norm} = $norm; ##-- track normalization mode used
+
+  if (defined($normsub)) {
+    my ($num,$denom,$kdate,$kclass,$val);
+    foreach (keys %$counts) {
+      ($kdate,$kclass) = split(/\t/,$_,2);
+      $denom = $normsub ? ($normsub->($_, $kdate, $kclass) // 1) : 1;
+      $num   = $counts->{$_};
+      $val   = ($logproj
+		? exp(log(1e6)*log($num+0.5)/log($denom+0.5))
+		: ($denom==0 ? ($gaps ? "1/0" : 0) : (1e6*$num/$denom)));
+      $counts->{$_} = $val;
+    }
+  }
+
+  return $counts;
+}
+
+##----------------------------------------------------------------------
+## \%prunedCounts = $ts->plotPrune()
+##  + prunes counts in $vars->{counts} if requested
+sub plotPrune {
+  my $ts = shift;
+  my $vars = $ts->{vars};
+  if ($vars->{prune} > 0) {
+    $ts->cachedebug(__PACKAGE__, "::plotPrune()\n");
+    require DDC::Dstar::TimeSeries::Outliers;
+    die(__PACKAGE__, "::plotPrune(): could not load package DDC::Dstar::TimeSeries::Outliers: $@") if ($@);
+    DDC::Dstar::TimeSeries::Outliers::prune_outliers($vars->{counts},
+						     conf=>(1-$vars->{prune}),
+						     classes=>$vars->{classes},
+						     dates=>$vars->{slices},
+						     sep=>"\t");
+  }
+  return $vars->{counts};
+}
+
+##----------------------------------------------------------------------
+## \%smoothedCounts = $ts->plotSmooth()
+##  + applies moving-average smoothing to $ts->{counts}
+sub plotSmooth {
+  my $ts = shift;
+  my $vars = $ts->{vars};
+  my ($counts,$window,$sliceby,$wbase,$logavg,$xrmin,$xrmax) = @$vars{qw(counts window sliceby wbase logavg xrmin xrmax)};
+
+  ##-- apply moving-average smoothing window
+  my $wcounts = $counts;
+  if ($window > 0 && $sliceby != 0) {
+    $wcounts = $vars->{counts} = {};
+    my ($kdate,$kclass,$val,$di,$wtotal,$ddate,$dval,$wval);
+    $wbase = exp(1) if (lc($wbase) eq 'e');
+    foreach (keys %$counts) {
+      ($kdate,$kclass) = split(/\t/,$_,2);
+      $val = $wtotal = 0;
+      for ($di=-$window; $di <= $window; ++$di) {
+	$ddate = $kdate + $di*$sliceby;
+	next if ($ddate < $xrmin || $ddate > $xrmax);
+	$dval    = $counts->{$ddate."\t".$kclass} // 0;
+	$wval    = $wbase ? ($wbase**-abs($di)) : 1;
+	$val    += $wval * ($logavg ? log($dval+0.5) : $dval);
+	$wtotal += $wval;
+      }
+      $val /= $wtotal;
+      $val  = exp($val)-0.5 if ($logavg);
+      $wcounts->{$_} = $val;
+    }
+  }
+
+  return $wcounts;
+}
+
+##----------------------------------------------------------------------
+## \@countRows = $ts->plotCollect()
+##  + collects count data from $vars->{counts} into $vars->{rows}
+sub plotCollect {
+  my $ts = shift;
+  my $vars = $ts->{vars};
+  my ($classesh,$counts,$countsRaw) = @$vars{qw(classesh counts countsRaw)};
+  #my ($xrmin,$xrmax) = @$vars{qw(xrmin xrmax)};
+
+  ##-- collect data points
+  my ($date,$class);
+  my @rows = (
+	      sort {
+		(($a->{date}//0) <=> ($b->{date}//0)) || (($a->{class}//'') cmp ($b->{class}//''))
+	      }
+	      grep { exists $classesh->{$_->{class}//''}
+		       #-- 2017-02-15: apply xrmin,xrmax at DATE-level, not SLICE-level
+		       #&& $_->{date} >= $xrmin && $_->{date} <= $xrmax
+		   }
+	      map {
+		($date,$class) = split(/\t/,$_,2);
+		{date=>$date, class=>$class, raw=>$countsRaw->{$_}, val=>$counts->{$_}}
+	      }
+	      keys %$counts
+	     );
+
+  return $vars->{rows} = \@rows;
+}
+
+##----------------------------------------------------------------------
+## $plotContent = $ts->plotContent()
+sub plotContent {
+  my $ts = shift;
+  my $vars = $ts->{vars};
+
+  my ($pfmt,$rows,$bare,$classes) = @$vars{qw(pfmt rows bare classes)};
+
+  ##-- output
+  my ($content);
+  if ($pfmt->{label} eq 'null') {
+    $content = '';
+  }
+  elsif ($pfmt->{label} eq 'json') {
+    $content = to_json($rows, {pretty=>$vars->{pretty}, utf8=>0});
+  }
+  elsif ($pfmt->{label} eq 'text') {
+    $content .= join("\t", @$_{qw(val date class)})."\n" foreach (@$rows);
+  }
+  else {
+    ##-- gnuplot: sanity check
+    die(__PACKAGE__, "::plotContent(): no data for query=\`$vars->{query}'") if (!@$rows);
+
+    ##-- gnuplot: check whether we can use gnuplot 5.0 features
+    my $gpv5  = $ts->gpVersion() >= version->parse('5.0');
+
+    ##-- gnuplot: ensure at least 2 points for @rows
+    if (@$rows==1) {
+      my $row = $rows->[0];
+      @$rows = ({%$row,date=>$vars->{xrmin}},{%$row,date=>$vars->{xrmax}});
+    }
+
+    ##-- gnuplot: options string
+    my $optstr = (""
+		  .($vars->{slice} ne '' ? "slice=$vars->{slice}" : '')
+		  .($vars->{smooth} ? " smooth=$vars->{smooth}" : '')
+		  .(" norm=$vars->{norm}")
+		  .($vars->{lognorm} ? " lognorm" : "")
+		  .(($vars->{window}||0) ? " win=$vars->{window}" : '')
+		  .(($vars->{wbase}||0) ? " wb=$vars->{wbase}" : '')
+		 );
+
+    ##-- gnuplot: title
+    my ($set_title);
+    if (!$vars->{title}) {
+      $set_title = ('set title "'
+		    .($vars->{totals} ? 'TOTALS' : ('\\"'.quotemeta($vars->{query}).'\\"'))
+		    .(" [$optstr]")
+		    .'"'
+		   );
+    } elsif ($vars->{title} eq 'none') {
+      $set_title = '';
+    } else {
+      $set_title = "set title \"".quotemeta($vars->{title})."\"";
+    }
+
+    ##-- gnuplot: other options
+    my $xlabel = $vars->{xlabel};
+    my $ylabel = $vars->{ylabel} || ("frequency ".($vars->{norm} eq 'abs' ? "(absolute)" : "(per million)"));
+    my $set_logscale = $vars->{logscale} ? "set logscale y ".($vars->{logscale}>1 ? $vars->{logscale} : "2") : '';
+    $vars->{key} = 'off' if ($vars->{key} eq 'none');
+    my $set_key  = $vars->{key} ? "set key $vars->{key}" : '';
+    my $yrange = $vars->{yrange};
+    $yrange =~ s/^\s*0\s*:/1:/ if ($vars->{logscale});
+    my $set_grid = ($vars->{grid} ? ($vars->{grid} =~ /^(?:on|1|yes|y)$/ ? "set grid" : "set grid $vars->{grid}") : 'unset grid');
+
+    ##-- gnuplot: bare: tics
+    my ($set_xtics,$set_ytics);
+    my ($xticmax, $yticmax) = (2000,1000);
+    if ($bare) {
+      my ($xmin,$xmax) = ($vars->{xrange} =~ /(.*):(.*)/ ? ($1,$2) : ('*','*'));
+      my ($ymin,$ymax) = ($vars->{yrange} =~ /(.*):(.*)/ ? ($1,$2) : ('*','*'));
+      $xmin    = $ts->rowmin('date',$rows) if ($xmin eq '*');
+      $xmax    = $ts->rowmax('date',$rows) if ($xmax eq '*');
+      $xmax   += $vars->{slice};
+      $ymax    = $ts->rowmax('val', $rows) if ($ymax eq '*');
+      my $ticopts = "nomirror textcolor rgb \"#979797\"";
+
+      $set_xtics = 'unset xtics;';
+      my @xtmax = qw(100 50 25 10 5 2 1);
+      my $xtrange = ($xmax-$xmin);
+      my $nxtics  = 2;
+      my (@xtics,@xticx);
+      foreach (@xtmax) {
+	if ($xtrange/$_ >= $nxtics) {
+	  my $xtic    = $_;
+	  my $xticmin = $xtic * int($xmin/$xtic);
+	  $xticmax    = $xtic * int($xmax/$xtic + 0.5);
+	  @xtics      = map { $xticmin + $_*$xtic } (0..int(($xticmax-$xticmin)/$xtic));
+	  @xticx      = map { $xtics[$_]-$_/$#xtics*$vars->{slice} } (0..$#xtics);
+	  $set_xtics  = "set xtics (".join(',', map {"\"$xtics[$_]\" $xticx[$_]"} (0..$#xtics)).") $ticopts;";
+	  #print STDERR "xmin=$xmin, xmax=$xmax, xtic=$xtic, xticmin=$xticmin, xticmax=$xticmax\n";##-- DEBUG
+	  last;
+	}
+      }
+
+      $set_ytics = 'unset ytics;';
+      my @ytmax = reverse map {($_/4,$_/2,$_)} map {10**$_} (-6..6);
+      my $nytics = 2;
+      foreach (@ytmax) {
+	if ($ymax/$_ >= $nytics) {
+	  my $ytic   = $_;
+	  $set_ytics = qq(set ytics $ytic $ticopts;);
+	  $yticmax   = $ytic * int($ymax/$ytic + 1);
+	  #print STDERR "ymin=$ymin, ymax=$ymax, ytic=$ytic, yticmax=$yticmax\n";##-- DEBUG
+	  last;
+	}
+      }
+
+      ##-- bare plot: term options
+      if ($vars->{pformat} eq 'svg') {
+	#$vars->{termopts} .= " font \"Arial,8\"";
+	#$vars->{termopts} .= " font \"Times Italic,8\"";
+	#$vars->{termopts} .= " font \"Crimson Text Italic,8\""; ##-- works in inkscape with font installed, but not in web view
+	$vars->{termopts} .= " font \"Serif Italic,8\""   ##-- workaround, gnuplot 4.x
+      }
+
+      ##-- bare plot: vertical bars (xBarClass pseudo-plot)
+      unshift(@$classes, $ts->{xBarClass});
+      $ymin = 0 if (($ymin//'') =~ /^\*?$/);
+      push(@$rows, map { {class=>$ts->{xBarClass},date=>$_,val=>$ymax} } @xticx);
+    }
+
+    ##-- gnuplot: set output
+    my $set_output='';
+    my $termopts = $vars->{termopts} // '';
+    $termopts   .= " dashed" if ($bare && !$gpv5); ##-- termoption "dashed" only works in gnuplot < 5.0
+    if ($ts->{debug} || $pfmt->{label} ne 'gnuplot') {
+      my ($tmpfh,$tmpfile) = File::Temp::tempfile("dhist_XXXXX", DIR=>"/tmp", SUFFIX=>".$pfmt->{label}");
+      close $tmpfh;
+      $vars->{tmpfile} = $tmpfile;
+      my $term = $pfmt->{term}//$vars->{pformat};
+      $term    = 'svg' if ($pfmt->{label} eq 'gnuplot');
+      $term    =~ s/\$SIZE/$vars->{size}/g;
+      $set_output = "set term $term $termopts background \"white\"; set output \"$tmpfile\"";
+      $ts->cachedebug("using tempfile $tmpfile\n") if ($ts->{debug});
+    }
+
+    ##-- gnuplot: script
+    my %pcmds = (map {($_=>"\"-\"".($vars->{smooth} ? " smooth $vars->{smooth}" : '')." title \"$_\"")} @$classes);
+    $pcmds{$ts->{textClassU}} = "$pcmds{$ts->{textClassU}} w l ".($bare ? "lt 1 lw 3.5 lc rgb \"#0087c2\"" : "lt 7 lw 5") if ($vars->{grand});
+    $pcmds{$ts->{xBarClass}}  = "\"-\" w i lt 1 lw 0.75 lc rgb \"#979797\" notitle" if (exists $pcmds{$ts->{xBarClass}});
+    my $gp = join('',
+		  map {"$_\n"}
+		  qq(set style data $vars->{style};),
+		  ($xlabel && $xlabel ne 'none' ? qq(set xlabel "$xlabel";) : qq(unset xlabel;)),
+		  ($ylabel && $ylabel ne 'none' ? qq(set ylabel "$ylabel";) : qq(unset ylabel;)),
+		  qq(set xrange [$vars->{xrange}];),
+		  qq(set yrange [$yrange];),
+		  "$set_grid;",
+		  "$set_logscale;",
+		  "$set_title;",
+		  "$set_key;",
+		  "$set_output;",
+		  ($bare
+		   ? (
+		      'set key off;',
+		      'set border lw 1 lt 1 lc rgb "#979797";', ##-- also sets tic color
+		      $set_xtics,
+		      $set_ytics,
+		      (map {"set $_ scale 0;"} qw(xtics ytics)),
+		      'unset border;',
+		      "set autoscale fix;",
+		      #
+		      #'set grid xtics ytics lc rgb "#979797" lw .75 lt 0;',
+		      #'set grid xtics ytics lc rgb "#979797" lw .75 lt 1;',
+		      'set grid noxtics ytics lc rgb "#979797" '.($gpv5 ? 'lw 1 lt 1 dt (2,8)' : 'lw .75 lt 3').';',
+		      #
+		      #"set autoscale y;",
+		      #"set lmargin ".(1+length($yticmax)/1.25).";",
+		      #"set bmargin 1;",
+		      #"set rmargin ".(length($xticmax)/2).";",
+		      #"set tmargin 1.0;",
+		      (map {"unset $_;"} qw(xlabel ylabel title)), #ylabel border tics
+		      #(map {"set ${_}margin 0;"} qw(l b r t)),
+		      ##
+		      #'set title "Frequenz / Mio Tokens" textcolor rgb "#979797";',
+		      ##
+		      #'set title "Frequenz / Mio Tokens" textcolor rgb "#979797";',
+		      #'set tmargin 1.6;',
+		      ##
+		      'set title "\n";',
+		      'set label 1 "Frequenz / Mio Tokens" at graph -.09,1.075 left textcolor rgb "#979797";',
+		      'set tmargin 1.6;',
+		     )
+		   : qw()),
+		  ("plot ".join(', ', @pcmds{@$classes}).";"),
+		 );
+
+    ##-- gnuplot: data
+    my ($class);
+    foreach $class (@$classes) {
+      my @crows = grep {$_->{class} eq $class} @$rows;
+      my $vmin  = $vars->{smooth} =~ /spline/ ? $ts->rowmin('val', [grep {$_->{val} > 0} @crows]) : 0;
+      foreach (@crows) {
+	$gp .= join("\t",$_->{date}, ($_->{val} <= 0 ? -$vmin : $_->{val}))."\n";
+      }
+      $gp .= "e\n";
+    }
+
+    ##-- raw gnuplot
+    if ($vars->{pformat} =~ /^(?:gnuplot|gp)$/) {
+      $content = $gp;
+    } else {
+      open(GNUPLOT,"|-:utf8", "gnuplot 2>/dev/null")
+	or die(__PACKAGE__, "::plotContent(): open failed for pipe to gnuplot: $!");
+      print GNUPLOT $gp;
+      #print STDERR $gp; ##-- DEBUG
+      close(GNUPLOT)
+	or die(__PACKAGE__, "::plotContent(): close failed for pipe to gnuplot: $!");
+
+      ##-- slurp temp file
+      open(TMP,"<$vars->{tmpfile}")
+	or die(__PACKAGE__, "::plotContent(): failed to open temp file '$vars->{tmpfile}' for reading: $!");
+      local $/=undef;
+      $content = <TMP>;
+      close TMP;
+
+      ##-- post-processing hacks for 'bare' svg plots under gnuplot v5
+      if ($bare && $gpv5 && $pfmt->{label} eq 'svg') {
+	$content =~ s{\b(font-size)=['"]8(?:\.0*)?[^'"]*['"]}{$1="11"}g;
+      }
+    }
+  }
+
+  return $content;
+}
