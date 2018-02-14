@@ -6,8 +6,10 @@
 ##==============================================================================
 
 package DDC::Dstar::TimeSeries;
+
 use DDC::Client::Distributed;
 #use DDC::Dstar::TimeSeries::Outliers;
+#use DB_File;
 
 use File::Basename qw(basename dirname);
 use Fcntl;
@@ -48,6 +50,11 @@ our $VERSION = 0.39;
 ##     ymin => $ymin,           ##-- minimum date (year)
 ##     ymax => $ymax,           ##-- maximum date
 ##     ##
+##     ##-- DB_File options
+##     useDB => $bool,          ##-- try and use local DB_File if available? (default=1)
+##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
+##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default=[qw(Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma')])
+##     ##
 ##     ##-- low-level options
 ##     debug => $bool,          ##-- debug mode?
 ##     useGenre => $bool,       ##-- auto-detect genres even if @genres is not set?
@@ -66,6 +73,8 @@ our $VERSION = 0.39;
 ##     client => $client,       ##-- underlying DDC::Client object
 ##     cache => \%cache,        ##-- global count-cache ( "${date}\t${class}" => $TOTAL, ... )
 ##     vars => \%vars,          ##-- parsed CGI request
+##     dbhash => \%dbhash,      ##-- tied hash
+##     dbtied => \$tied,        ##-- tied(%dbhash)
 ##    )
 sub new {
   my $that = shift;
@@ -84,6 +93,11 @@ sub new {
 		##-- plot parameters
 		ymin => undef,
 		ymax => undef,
+
+		##-- DB_File options
+		useDB => 1,
+		dbFile => (dirname($0)."/dhist.db"),
+		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
 
 		##-- low-level options
 		debug => 0,
@@ -201,6 +215,114 @@ sub ddcCounts {
   #print STDERR "-> ", to_json($data,{canonical=>1,utf8=>1,pretty=>1}) if ($ts->{debug});
   return $data;
 }
+
+##==============================================================================
+## Subs: local DB_File
+
+##----------------------------------------------------------------------
+## $tied_or_undef = $ts->ensureDB()
+sub ensureDB {
+  my $ts = shift;
+  return undef if (!$ts->{useDB} || !$ts->{dbFile} || !-r $ts->{dbFile});
+  return $ts->{dbtied} if (defined($ts->{dbtied}));
+
+  require DB_File;
+  $ts->{dbhash} = {};
+  if (!tie(%{$ts->{dbhash}}, 'DB_File', $ts->{dbFile}, O_RDONLY, 0644, $DB_File::DB_BTREE)) {
+    warn(__PACKAGE__, "::ensureDB(): failed to tie DB_File '$ts->{dbFile}': $!");
+    return undef;
+  }
+
+  $ts->{dbtied} = tied(%{$ts->{dbhash}});
+  return $ts->{dbtied};
+}
+
+##----------------------------------------------------------------------
+## $responseData = $ts->dbCounts(\@lemmata)
+##  + variant of ddcCounts() using explicit lemma list
+sub dbCounts {
+  my ($ts,$lemmata) = @_;
+  my $tied = $ts->ensureDB()
+    or die(__PACKAGE__, "::dbCounts(): local DB not available");
+
+  ##-- variables
+  my ($useGenre,$textClassKey,$UCLASS) = @$ts{qw(useGenre textClassKey textClassU)};
+
+  ##-- guts
+  print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): ", join(' ',@$lemmata), "\n" if ($ts->{debug});
+  my ($lemma,%counts,$status,$key,$val, $klemma,$kdate,$kclass, $ftotal);
+  foreach $lemma (sort @$lemmata) {
+    utf8::encode($lemma) if (!utf8::is_utf8($lemma));
+
+    for ($status = $tied->seq(($key="$lemma\t"),$val,&DB_File::R_CURSOR);
+	 $status == 0;
+	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
+      ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
+      last if ($klemma ne $lemma);
+      $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+    }
+  }
+
+  return {counts_=>[map {[$counts{$_},split(/\t/,$_,2)]} keys %counts]};
+}
+
+##==============================================================================
+## Subs: generic counts
+
+## @uniq = luniq(@items)
+sub luniq {
+  my ($tmp);
+  return map {defined($tmp) && $_ ne $tmp ? ($tmp=$_) : qw()} sort @_;
+}
+
+##----------------------------------------------------------------------
+## $responseData = $ts->genericCounts($qstr,%ddcClientOpts)
+##  + "smart" dispatch: use local DB if requested and available, otherwise DDC
+sub genericCounts {
+  my ($ts,$qstr,%ddcClientOpts) = @_;
+
+  if ($ts->{useDB} && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
+    ##-- try to query using DB
+    my ($rsp);
+    eval {
+      require DDC::Any or die("failed to require DDC::Any");
+      DDC::Any->import if (!$DDC::Any::WHICH);
+      die("no DDC query parser implementation") if (!$DDC::Any::WHICH);
+
+      my $qobj = eval { ref($qstr) ? $qstr : DDC::Any->parse($qstr) };
+      die("failed to parse query-string '$qstr' ".($@ ? ": $@" : '')) if (!$qobj);
+
+      ##-- can we realistically handle this query with the DB?
+      my $qindex = ($qobj->can('getIndexName') ? $qobj->getIndexName : undef) // '';
+      my $qclass = ref($qobj) // '';
+      $qclass =~ s{.*::}{};
+
+      die("detected non-trivial query `$qstr'")
+	if ($qclass !~ /^CQTok(?:Exact|Infl|Set|SetInfl)$/
+	    || !exists($ts->{dbIndices}{$qindex})
+	    || @{$qobj->getOptions->getFilters//[]}
+	    || @{$qobj->getOptions->getSubcorpora//[]}
+	    || ($qclass !~ /Infl/ && $qindex eq ''));
+
+      ##-- expand if requested
+      my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
+      my $xvals   = \@lemmata;
+      my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
+      @$chain     = ($ts->{dbIndices}{$qindex}) if ($qobj->can('getExpanders') && !@$chain);
+      if (@$chain) {
+	my $client = $ts->ensureClient(mode=>'raw');
+	$xvals     = $client->expand($chain,\@lemmata)
+	  or die("failed to expand lemmata");
+      }
+
+      $rsp = $ts->dbCounts($xvals);
+    };
+    return $rsp if ($rsp);
+  }
+
+  return $ts->ddcCounts($qstr,%ddcClientOpts);
+}
+
 
 ##==============================================================================
 ## Subs: gnuplot version
@@ -710,7 +832,7 @@ sub plotFetchCounts {
     $f_query += $_ foreach (values %counts);
   } else {
     ##-- plot nontrivial counts
-    my $data = $ts->ddcCounts($query); #$ts->ddcCounts(autoExpandQuery($query));
+    my $data = $ts->genericCounts($query); #$ts->ddcCounts($query); #$ts->ddcCounts(autoExpandQuery($query));
     my $minslice = $sliceof->($xrmin);
     my ($val,$kdate,$kclass,$kslice);
     foreach (@{$data->{counts_}}) {
