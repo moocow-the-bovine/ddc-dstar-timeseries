@@ -24,7 +24,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = 0.38;
+our $VERSION = 0.39;
 
 ##==============================================================================
 ## Constructors etc.
@@ -605,7 +605,9 @@ sub plotInitialize {
   $vars->{$_} = $defaults{$_}       foreach (grep {($vars->{$_}//'') eq ''} keys %defaults);
 
   ##-- dump vars (debug)
-  print STDERR "$ts->{prog} variables: ".JSON::to_json($vars,{utf8=>0,pretty=>1})."\n" if ($ts->{debug});
+  # v-- errors "Thread 1 terminated abnormally: hash- or arrayref expected (not a simple scalar, use allow_nonref to allow this) at /usr/share/perl5/JSON.pm line 154."
+  #     when running under forks.pm
+  print STDERR "$ts->{prog} variables: ", JSON::to_json($vars,{utf8=>0,pretty=>1}), "\n" if ($ts->{debug});
 
   ##-- variable-dependent conveniences
   $vars->{sliceby} = do { no warnings 'numeric'; ($vars->{slice}+0); };
@@ -693,6 +695,7 @@ sub plotInitialize {
 ##  + requires $ts->plotInitialize()
 sub plotFetchCounts {
   my $ts = shift;
+  $ts->cachedebug("plotFetchCounts()\n");
 
   ##-- variables
   my $vars = $ts->{vars};
@@ -732,6 +735,8 @@ sub plotFetchCounts {
 ##  + adjusts @{$vars->{classes}}, sets %{$vars->{classesh}}
 sub plotFill {
   my $ts = shift;
+  $ts->cachedebug("plotFill()\n");
+
   my $vars = $ts->{vars};
   my $UCLASS = $ts->{textClassU};
   my ($counts,$dc2f,$c2f) = @$vars{qw(counts dc2f c2f)};
@@ -776,8 +781,9 @@ sub plotFill {
 ##  + saves pre-normalization counts in $ts->{vars}{countsRaw}
 sub plotNormalize {
   my $ts = shift;
-  my $vars = $ts->{vars};
+  $ts->cachedebug("plotNormalize()\n");
 
+  my $vars = $ts->{vars};
   my ($counts,$norm,$dc2f,$d2f,$c2f,$f_corpus) = @$vars{qw(counts norm dc2f d2f c2f f_corpus)};
   my ($logproj,$gaps) = @$vars{qw(logproj gaps)};
 
@@ -827,9 +833,11 @@ sub plotNormalize {
 ##  + prunes counts in $vars->{counts} if requested
 sub plotPrune {
   my $ts = shift;
+  $ts->cachedebug("plotPrune()\n");
+
   my $vars = $ts->{vars};
   if ($vars->{prune} > 0) {
-    $ts->cachedebug(__PACKAGE__, "::plotPrune()\n");
+    $ts->cachedebug("plotPrune(): detected non-trivial pruning parameter prune=$vars->{prune}");
     require DDC::Dstar::TimeSeries::Outliers;
     die(__PACKAGE__, "::plotPrune(): could not load package DDC::Dstar::TimeSeries::Outliers: $@") if ($@);
     DDC::Dstar::TimeSeries::Outliers::prune_outliers($vars->{counts},
@@ -846,6 +854,8 @@ sub plotPrune {
 ##  + applies moving-average smoothing to $ts->{counts}
 sub plotSmooth {
   my $ts = shift;
+  $ts->cachedebug("plotSmooth()\n");
+
   my $vars = $ts->{vars};
   my ($counts,$window,$sliceby,$wbase,$logavg,$xrmin,$xrmax) = @$vars{qw(counts window sliceby wbase logavg xrmin xrmax)};
 
@@ -880,6 +890,8 @@ sub plotSmooth {
 ##  + collects count data from $vars->{counts} into $vars->{rows}
 sub plotCollect {
   my $ts = shift;
+  $ts->cachedebug("plotCollect()\n");
+
   my $vars = $ts->{vars};
   my ($classesh,$counts,$countsRaw) = @$vars{qw(classesh counts countsRaw)};
   #my ($xrmin,$xrmax) = @$vars{qw(xrmin xrmax)};
@@ -908,8 +920,9 @@ sub plotCollect {
 ## $plotContent = $ts->plotContent()
 sub plotContent {
   my $ts = shift;
-  my $vars = $ts->{vars};
+  $ts->cachedebug("plotContent()\n");
 
+  my $vars = $ts->{vars};
   my ($pfmt,$rows,$bare,$classes) = @$vars{qw(pfmt rows bare classes)};
 
   ##-- output
