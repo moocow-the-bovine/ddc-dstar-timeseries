@@ -29,13 +29,13 @@ use strict;
 our $VERSION = 0.39;
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
-my $USE_DB_FAST = 1;
+our $USE_DB_FAST = 1;
 
 ## $USE_DB_PARSE : bitmask for 'useDB': full DDC parse with DDC::Any
-my $USE_DB_PARSE = 2;
+our $USE_DB_PARSE = 2;
 
 ## $USE_DB_ANY : bitmask for 'useDB': fast or parse
-my $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
+our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 
 ##==============================================================================
 ## Constructors etc.
