@@ -51,7 +51,7 @@ our $VERSION = 0.39;
 ##     ymax => $ymax,           ##-- maximum date
 ##     ##
 ##     ##-- DB_File options
-##     useDB => $bool,          ##-- try and use local DB_File if available? (default=1)
+##     useDB => $bool,          ##-- try and use local DB_File if available? (0:no, 1:parse(defaults), 2:fast)
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
 ##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default=[qw(Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma')])
 ##     ##
@@ -220,10 +220,19 @@ sub ddcCounts {
 ## Subs: local DB_File
 
 ##----------------------------------------------------------------------
+## $bool = $ts->wantDB()
+##  + returns true if we can at least try to use DB
+##  + checks $ts->{useDB}, $ts->{dbFile}, $ts->{vars}{nodb}
+sub wantDB {
+  my $ts = shift;
+  return ($ts->{useDB} && $ts->{dbFile} && -r $ts->{dbFile} && (!$ts->{vars} || $ts->{vars}{usedb}));
+}
+
+##----------------------------------------------------------------------
 ## $tied_or_undef = $ts->ensureDB()
 sub ensureDB {
   my $ts = shift;
-  return undef if (!$ts->{useDB} || !$ts->{dbFile} || !-r $ts->{dbFile});
+  return undef if (!$ts->wantDB);
   return $ts->{dbtied} if (defined($ts->{dbtied}));
 
   require DB_File;
@@ -243,7 +252,7 @@ sub ensureDB {
 sub dbCounts {
   my ($ts,$lemmata) = @_;
   my $tied = $ts->ensureDB()
-    or die(__PACKAGE__, "::dbCounts(): local DB not available");
+    or die(__PACKAGE__, "::dbCounts(): local DB ".($ts->{dbFile}//'-undef-')." not available");
 
   ##-- variables
   my ($useGenre,$textClassKey,$UCLASS) = @$ts{qw(useGenre textClassKey textClassU)};
@@ -252,7 +261,7 @@ sub dbCounts {
   print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): ", join(' ',@$lemmata), "\n" if ($ts->{debug});
   my ($lemma,%counts,$status,$key,$val, $klemma,$kdate,$kclass, $ftotal);
   foreach $lemma (sort @$lemmata) {
-    utf8::encode($lemma) if (!utf8::is_utf8($lemma));
+    utf8::encode($lemma) if (utf8::is_utf8($lemma));
 
     for ($status = $tied->seq(($key="$lemma\t"),$val,&DB_File::R_CURSOR);
 	 $status == 0;
@@ -281,43 +290,70 @@ sub luniq {
 sub genericCounts {
   my ($ts,$qstr,%ddcClientOpts) = @_;
 
-  if ($ts->{useDB} && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
-    ##-- try to query using DB
+  if ($ts->wantDB && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
+    ##-- try DB_File query
     my ($rsp);
+    my $dbhow = $ts->{vars}{usedb} // $ts->{useDB};
     eval {
-      require DDC::Any or die("failed to require DDC::Any");
-      DDC::Any->import if (!$DDC::Any::WHICH);
-      die("no DDC query parser implementation") if (!$DDC::Any::WHICH);
+      if ($dbhow >= 2) {
+	##-- try DB_File query: fast regex hack
+	print STDERR __PACKAGE__, "::genericCounts(): trying local DB [fast]\n" if ($ts->{debug});
 
-      my $qobj = eval { ref($qstr) ? $qstr : DDC::Any->parse($qstr) };
-      die("failed to parse query-string '$qstr' ".($@ ? ": $@" : '')) if (!$qobj);
-
-      ##-- can we realistically handle this query with the DB?
-      my $qindex = ($qobj->can('getIndexName') ? $qobj->getIndexName : undef) // '';
-      my $qclass = ref($qobj) // '';
-      $qclass =~ s{.*::}{};
-
-      die("detected non-trivial query `$qstr'")
-	if ($qclass !~ /^CQTok(?:Exact|Infl|Set|SetInfl)$/
-	    || !exists($ts->{dbIndices}{$qindex})
-	    || @{$qobj->getOptions->getFilters//[]}
-	    || @{$qobj->getOptions->getSubcorpora//[]}
-	    || ($qclass !~ /Infl/ && $qindex eq ''));
-
-      ##-- expand if requested
-      my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
-      my $xvals   = \@lemmata;
-      my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
-      @$chain     = ($ts->{dbIndices}{$qindex}) if ($qobj->can('getExpanders') && !@$chain);
-      if (@$chain) {
-	my $client = $ts->ensureClient(mode=>'raw');
-	$xvals     = $client->expand($chain,\@lemmata)
-	  or die("failed to expand lemmata");
+	if ($qstr =~ m{^(?:\$(?:l|Lemma)\s*=\s*)?\s*"?'?([[:alpha:]_\-\+\\]+)'?"?\s*$}) {
+	  my $lemma = $1;
+	  my $chain = $ts->{dbIndices}{''};
+	  my $xvals = [$lemma];
+	  if ($chain) {
+	    $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,$lemma)
+	      or die("failed to expand lemma '$lemma'");
+	    foreach (@$xvals) {
+	      utf8::decode($_) if (!utf8::is_utf8($_));
+	    }
+	  }
+	  $rsp = $ts->dbCounts($xvals);
+	}
       }
+      if (!$rsp) {
+	##-- try DB_File query: parse
+	print STDERR __PACKAGE__, "::genericCounts(): trying local DB [parsed]\n" if ($ts->{debug});
 
-      $rsp = $ts->dbCounts($xvals);
+	require DDC::Any or die("failed to require DDC::Any");
+	DDC::Any->import if (!$DDC::Any::WHICH);
+	die("no DDC query parser implementation") if (!$DDC::Any::WHICH);
+
+	my $qobj = eval { ref($qstr) ? $qstr : DDC::Any->parse($qstr) };
+	die("failed to parse query-string '$qstr' ".($@ ? ": $@" : '')) if (!$qobj);
+
+	##-- can we realistically handle this query with the DB?
+	my $qindex = ($qobj->can('getIndexName') ? $qobj->getIndexName : undef) // '';
+	my $qclass = ref($qobj) // '';
+	$qclass =~ s{.*::}{};
+
+	die("detected non-trivial query `$qstr'")
+	  if ($qclass !~ /^CQTok(?:Exact|Infl|Set|SetInfl)$/
+	      || !exists($ts->{dbIndices}{$qindex})
+	      || @{$qobj->getOptions->getFilters//[]}
+	      || @{$qobj->getOptions->getSubcorpora//[]}
+	      || ($qclass !~ /Infl/ && $qindex eq ''));
+
+	##-- expand if requested
+	my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
+	my $xvals   = \@lemmata;
+	my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
+	@$chain     = ($ts->{dbIndices}{$qindex}) if ($qobj->can('getExpanders') && !@$chain);
+	if (@$chain) {
+	  $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,\@lemmata)
+	    or die("failed to expand lemmata");
+	  foreach (@$xvals) {
+	    utf8::decode($_) if (!utf8::is_utf8($_));
+	  }
+	}
+
+	$rsp = $ts->dbCounts($xvals);
+      }
     };
     return $rsp if ($rsp);
+    print STDERR __PACKAGE__, "::genericCounts(): fetch from local DB failed: ", ($@||'???'), "\n" if ($ts->{debug});
   }
 
   return $ts->ddcCounts($qstr,%ddcClientOpts);
@@ -395,7 +431,7 @@ sub serverTimestamp {
   if ($ts->{cacheUseInfo}) {
     ##-- use most recent 'indexed' entry for server 'info' request (slower, ca. 300 q/s)
     my $stamp = '1970-01-01T00:00:00Z';
-    my @q     = ( $ts->ddcRequest('info') );
+    my @q     = ( $ts->ddcRequest('info', mode=>'raw') );
     my ($c);
     while (defined($c=shift(@q))) {
       $stamp = $c->{indexed} if ($c->{indexed} && $c->{indexed} gt $stamp);
@@ -404,7 +440,7 @@ sub serverTimestamp {
     return $stamp;
   } else {
     ##-- use server start timestamp (faster but less reliable, ca. 1200 q/s)
-    return $ts->ddcRequest("status")->{started};
+    return $ts->ddcRequest("status", mode=>'raw')->{started};
   }
 }
 
@@ -564,6 +600,7 @@ my %defaults =
 
    ##-- debugging options
    debug => 0,
+   usedb => 0, ##-- 0:no, 1:fast, 2:parse; default=$ts->{usedb}
   );
 
 ##----------------------------------------------------------------------
@@ -597,6 +634,10 @@ my %aliases =
 
    ##-- json only options
    pretty => [qw(pretty)],
+
+   ##-- debugging options
+   debug => [qw(debug)],
+   usedb => [qw(usedb useDB trydb tryDB db)], ##-- 0:no, 1:fast, 2:parse; default=$ts->{useDB}
   );
 
 ##----------------------------------------------------------------------
@@ -723,6 +764,7 @@ sub plotInitialize {
 
   ##-- variable defaults
   $vars->{prune} = 0.05 if ($vars->{bare} && ($vars->{prune}//'') eq ''); ##-- default prune=.05 for 'bare' plots
+  $vars->{usedb} = $ts->{useDB} if (($vars->{usedb}//'') eq '');
   $vars->{$_} = $ts->{defaults}{$_} foreach (grep {($vars->{$_}//'') eq ''} keys %{$ts->{defaults}//{}}); ##-- in case e.g. local.rc overrides %defaults
   $vars->{$_} = $defaults{$_}       foreach (grep {($vars->{$_}//'') eq ''} keys %defaults);
 
@@ -959,7 +1001,7 @@ sub plotPrune {
 
   my $vars = $ts->{vars};
   if ($vars->{prune} > 0) {
-    $ts->cachedebug("plotPrune(): detected non-trivial pruning parameter prune=$vars->{prune}");
+    $ts->cachedebug("plotPrune(): detected non-trivial pruning parameter prune=$vars->{prune}\n");
     require DDC::Dstar::TimeSeries::Outliers;
     die(__PACKAGE__, "::plotPrune(): could not load package DDC::Dstar::TimeSeries::Outliers: $@") if ($@);
     DDC::Dstar::TimeSeries::Outliers::prune_outliers($vars->{counts},
