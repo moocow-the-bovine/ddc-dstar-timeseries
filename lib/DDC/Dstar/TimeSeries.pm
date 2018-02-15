@@ -28,6 +28,15 @@ use strict;
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
 our $VERSION = 0.39;
 
+## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
+my $USE_DB_FAST = 1;
+
+## $USE_DB_PARSE : bitmask for 'useDB': full DDC parse with DDC::Any
+my $USE_DB_PARSE = 2;
+
+## $USE_DB_ANY : bitmask for 'useDB': fast or parse
+my $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
+
 ##==============================================================================
 ## Constructors etc.
 
@@ -51,7 +60,7 @@ our $VERSION = 0.39;
 ##     ymax => $ymax,           ##-- maximum date
 ##     ##
 ##     ##-- DB_File options
-##     useDB => $bool,          ##-- try and use local DB_File if available? (0:no, 1:parse(defaults), 2:fast)
+##     useDB => $mask,          ##-- try and use local DB_File if available? (0:no, 1:fast(default), 2:parse, 3:fast-or-parse)
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
 ##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default=[qw(Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma')])
 ##     ##
@@ -95,7 +104,7 @@ sub new {
 		ymax => undef,
 
 		##-- DB_File options
-		useDB => 1,
+		useDB => $USE_DB_FAST,
 		dbFile => (dirname($0)."/dhist.db"),
 		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
 
@@ -293,13 +302,13 @@ sub genericCounts {
   if ($ts->wantDB && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
     ##-- try DB_File query
     my ($rsp);
-    my $dbhow = $ts->{vars}{usedb} // $ts->{useDB};
+    my $dbhow = ($ts->{vars}{usedb} // $ts->{useDB}) || '0';
     eval {
-      if ($dbhow >= 2) {
+      if ($dbhow & $USE_DB_FAST) {
 	##-- try DB_File query: fast regex hack
 	print STDERR __PACKAGE__, "::genericCounts(): trying local DB [fast]\n" if ($ts->{debug});
 
-	if ($qstr =~ m{^(?:\$(?:l|Lemma)\s*=\s*)?\s*"?'?([[:alpha:]_\-\+\\]+)'?"?\s*$}) {
+	if ($qstr =~ m{^\s*\"?\s*(?:\$(?:l|Lemma)\s*=\s*)?\'?([[:alpha:]_\-\+\\]+)\'?\s*(?:\s*\|\s*(?:www|Lemma|-))*\s*\"?}) {
 	  my $lemma = $1;
 	  my $chain = $ts->{dbIndices}{''};
 	  my $xvals = [$lemma];
@@ -312,9 +321,11 @@ sub genericCounts {
 	  }
 	  $rsp = $ts->dbCounts($xvals);
 	}
+	die("query too complex for fast DB heuristics") if ( !($dbhow & $USE_DB_PARSE) );
       }
-      if (!$rsp) {
+      if (!$rsp && ($dbhow & $USE_DB_PARSE)) {
 	##-- try DB_File query: parse
+	$@ = '';
 	print STDERR __PACKAGE__, "::genericCounts(): trying local DB [parsed]\n" if ($ts->{debug});
 
 	require DDC::Any or die("failed to require DDC::Any");
@@ -353,7 +364,7 @@ sub genericCounts {
       }
     };
     return $rsp if ($rsp);
-    print STDERR __PACKAGE__, "::genericCounts(): fetch from local DB failed: ", ($@||'???'), "\n" if ($ts->{debug});
+    print STDERR __PACKAGE__, "::genericCounts(): fetch from local DB failed: ", ($@||"???\n") if ($ts->{debug});
   }
 
   return $ts->ddcCounts($qstr,%ddcClientOpts);
@@ -600,7 +611,7 @@ my %defaults =
 
    ##-- debugging options
    debug => 0,
-   usedb => 0, ##-- 0:no, 1:fast, 2:parse; default=$ts->{usedb}
+   #usedb => 0, ##-- 0:no, 1:fast, 2:parse, 3:fast-or-parse; default=$ts->{usedb}
   );
 
 ##----------------------------------------------------------------------
@@ -637,7 +648,7 @@ my %aliases =
 
    ##-- debugging options
    debug => [qw(debug)],
-   usedb => [qw(usedb useDB trydb tryDB db)], ##-- 0:no, 1:fast, 2:parse; default=$ts->{useDB}
+   usedb => [qw(usedb useDB trydb tryDB db)], ##-- 0:no, 1:fast, 2:parse, 3:any; default=$ts->{useDB}
   );
 
 ##----------------------------------------------------------------------
