@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = 0.39;
+our $VERSION = 0.40;
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -66,6 +66,7 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ##     ##
 ##     ##-- low-level options
 ##     debug => $bool,          ##-- debug mode?
+##     keeptmp => $bool,        ##-- keep temp files? (default=0)
 ##     useGenre => $bool,       ##-- auto-detect genres even if @genres is not set?
 ##     cacheFile => $file,      ##-- JSON file to load/store cache (undef=always update)
 ##     cacheMinAge => $secs,    ##-- minimum cache age for auto-update (in seconds, e.g. 60*60*24*7 ~ 1 week; undef=no minimum)
@@ -110,6 +111,7 @@ sub new {
 
 		##-- low-level options
 		debug => 0,
+		keeptmp => 0,
 		useGenre => 1,
 		cacheFile => (dirname($0)."/dhist-cache.json"),
 		cacheMinAge => undef,
@@ -136,8 +138,7 @@ sub new {
 ## undef = $ts->DESTROY()
 ##  + destructor removes tmpfile if defined
 sub DESTROY {
-  my $tmpfile = $_[0]{vars} ? $_[0]{vars}{tmpfile} : undef;
-  unlink($tmpfile) if (defined($tmpfile) && -e $tmpfile);
+  $_[0]->plotCleanup();
 }
 
 ##----------------------------------------------------------------------
@@ -762,7 +763,28 @@ sub plot {
   $ts->plotPrune();
   $ts->plotSmooth();
   $ts->plotCollect();
-  return $ts->plotContent();
+  my $content = $ts->plotContent();
+  $ts->plotCleanup() if (!$ts->{keeptmp}); ##-- cleanup any stale leftovers
+  return $content;
+}
+
+##----------------------------------------------------------------------
+## $ts = $ts->plotCleanup()
+##  + cleans up local state
+sub plotCleanup {
+  my $ts = shift;
+  $ts->cachedebug("plotCleanup()\n");
+
+  if (!$ts->{keeptmp} && $ts->{vars} && $ts->{vars}{tmpfile}) {
+    my $tmpfile = $ts->{vars}{tmpfile};
+    $ts->cachedebug("UNLINK $tmpfile\n");
+    unlink($tmpfile) if (defined($tmpfile) && -e $tmpfile);
+  }
+
+  ##-- done with vars
+  delete $ts->{vars};
+
+  return $ts;
 }
 
 ##----------------------------------------------------------------------
