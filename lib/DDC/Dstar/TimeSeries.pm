@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.40';
+our $VERSION = '0.41';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -952,7 +952,7 @@ sub plotFill {
     foreach (keys %$c2f) {
       $c2f->{$UCLASS} += $c2f->{$_};
     }
-    push(@{$ts->{classes}},$UCLASS);
+    push(@{$vars->{classes}},$UCLASS);
   }
 
   ##-- guts: fill gaps
