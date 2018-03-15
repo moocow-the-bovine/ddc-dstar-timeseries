@@ -63,6 +63,7 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ##     useDB => $mask,          ##-- try and use local DB_File if available? (0:no, 1:fast(default), 2:parse, 3:fast-or-parse)
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
 ##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default=[qw(Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma')])
+##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default=[qw(Lemma=>'www', l=>'www', ''=>'www')])
 ##     ##
 ##     ##-- low-level options
 ##     debug => $bool,          ##-- debug mode?
@@ -108,6 +109,7 @@ sub new {
 		useDB => $USE_DB_FAST,
 		dbFile => (dirname($0)."/dhist.db"),
 		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
+		dbExpand  => {Lemma=>'www', l=>'www', ''=>'www'},
 
 		##-- low-level options
 		debug => 0,
@@ -311,7 +313,7 @@ sub genericCounts {
 
 	if ($qstr =~ m{^\s*\"?\s*(?:\$(?:l|Lemma)\s*=\s*)?\'?([[:alpha:]_\-\+\\]+)\'?\s*(?:\s*\|\s*(?:www|Lemma|-))*\s*\"?}) {
 	  my $lemma = $1;
-	  my $chain = $ts->{dbIndices}{''};
+	  my $chain = $ts->{dbExpand}{''};
 	  my $xvals = [$lemma];
 	  if ($chain) {
 	    $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,$lemma)
