@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.41';
+our $VERSION = '0.42';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -316,6 +316,7 @@ sub genericCounts {
 	  my $chain = $ts->{dbExpand}{''};
 	  my $xvals = [$lemma];
 	  if ($chain) {
+	    print STDERR __PACKAGE__, "::genericCounts(): expand(chain=$chain,term=$lemma)\n" if ($ts->{debug});
 	    $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,$lemma)
 	      or die("failed to expand lemma '$lemma'");
 	    foreach (@$xvals) {
@@ -354,8 +355,9 @@ sub genericCounts {
 	my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
 	my $xvals   = \@lemmata;
 	my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
-	@$chain     = ($ts->{dbIndices}{$qindex}) if ($qobj->can('getExpanders') && !@$chain);
+	@$chain     = ($ts->{dbExpand}{$qindex}) if ($qobj->can('getExpanders') && !@$chain);
 	if (@$chain) {
+	  print STDERR __PACKAGE__, "::genericCounts(): expand(chain=".join('|',@$chain).",terms={".join(',',@lemmata)."})\n" if ($ts->{debug});
 	  $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,\@lemmata)
 	    or die("failed to expand lemmata");
 	  foreach (@$xvals) {
