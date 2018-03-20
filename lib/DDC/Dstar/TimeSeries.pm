@@ -63,7 +63,7 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ##     useDB => $mask,          ##-- try and use local DB_File if available? (0:no, 1:fast(default), 2:parse, 3:fast-or-parse)
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
 ##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'})
-##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www'})
+##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'})
 ##     ##
 ##     ##-- low-level options
 ##     debug => $bool,          ##-- debug mode?
@@ -109,7 +109,7 @@ sub new {
 		useDB => $USE_DB_FAST,
 		dbFile => (dirname($0)."/dhist.db"),
 		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
-		dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www'},
+		dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'},
 
 		##-- low-level options
 		debug => 0,
