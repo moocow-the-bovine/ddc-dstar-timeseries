@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.42';
+our $VERSION = '0.43';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -62,8 +62,8 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ##     ##-- DB_File options
 ##     useDB => $mask,          ##-- try and use local DB_File if available? (0:no, 1:fast(default), 2:parse, 3:fast-or-parse)
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
-##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default=[qw(Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma')])
-##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default=[qw(Lemma=>'www', l=>'www', ''=>'www')])
+##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'})
+##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www'})
 ##     ##
 ##     ##-- low-level options
 ##     debug => $bool,          ##-- debug mode?
@@ -109,7 +109,7 @@ sub new {
 		useDB => $USE_DB_FAST,
 		dbFile => (dirname($0)."/dhist.db"),
 		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
-		dbExpand  => {Lemma=>'www', l=>'www', ''=>'www'},
+		dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www'},
 
 		##-- low-level options
 		debug => 0,
@@ -311,19 +311,26 @@ sub genericCounts {
 	##-- try DB_File query: fast regex hack
 	print STDERR __PACKAGE__, "::genericCounts(): trying local DB [fast]\n" if ($ts->{debug});
 
-	if ($qstr =~ m{^\s*\"?\s*(?:\$(?:l|Lemma)\s*=\s*)?\'?([[:alpha:]_\-\+\\]+)\'?\s*(?:\s*\|\s*(?:www|Lemma|-))*\s*\"?}) {
-	  my $lemma = $1;
-	  my $chain = $ts->{dbExpand}{''};
+	if ($qstr =~ m{^\s*\"?\s*(?:\$(?:l|Lemma)\s*=\s*)?\'?([[:alpha:]_\-\+\\]+)\'?\s*(?:\|([\w\s\-\|]+)\s*)?\"?\s*$}) {
+	  my $lemma = unescapeDDC($1);
+	  my $chain = $2 // $ts->{dbIndices}{''};
 	  my $xvals = [$lemma];
-	  if ($chain) {
-	    print STDERR __PACKAGE__, "::genericCounts(): expand(chain=$chain,term=$lemma)\n" if ($ts->{debug});
-	    $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,$lemma)
-	      or die("failed to expand lemma '$lemma'");
-	    foreach (@$xvals) {
-	      utf8::decode($_) if (!utf8::is_utf8($_));
-	    }
+	  if (grep {!exists($ts->{dbExpand}{$_})} split(/\s*\|\s*/,$chain)) {
+	    ##-- expansion chain too complex (e.g. |Lemma for dta+dwds)
+	    print STDERR __PACKAGE__, "::genericCounts(): expansion chain too complex for fast DB heuristics: ($chain)\n" if ($ts->{debug});
 	  }
-	  $rsp = $ts->dbCounts($xvals);
+	  else {
+	    ##-- expansion chain looks ok
+	    if ($chain) {
+	      print STDERR __PACKAGE__, "::genericCounts(): expand(chain=$chain,term=$lemma)\n" if ($ts->{debug});
+	      $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,$lemma)
+		or die("failed to expand lemma '$lemma'");
+	      foreach (@$xvals) {
+		utf8::decode($_) if (!utf8::is_utf8($_));
+	      }
+	    }
+	    $rsp = $ts->dbCounts($xvals)
+	  }
 	}
 	die("query too complex for fast DB heuristics") if ( !($dbhow & $USE_DB_PARSE) );
       }
@@ -355,17 +362,24 @@ sub genericCounts {
 	my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
 	my $xvals   = \@lemmata;
 	my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
-	@$chain     = ($ts->{dbExpand}{$qindex}) if ($qobj->can('getExpanders') && !@$chain);
-	if (@$chain) {
-	  print STDERR __PACKAGE__, "::genericCounts(): expand(chain=".join('|',@$chain).",terms={".join(',',@lemmata)."})\n" if ($ts->{debug});
-	  $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,\@lemmata)
-	    or die("failed to expand lemmata");
-	  foreach (@$xvals) {
-	    utf8::decode($_) if (!utf8::is_utf8($_));
-	  }
+	@$chain     = ('-') if ($qobj->can('getExpanders') && !@$chain);
+	@$chain     = map {($_//'-') =~ /^\-?$/ ? ($ts->{dbIndices}{$qindex}//$qindex) : $_} @$chain;
+	if (grep {!exists($ts->{dbExpand}{$_})} @$chain) {
+	  ##-- expansion chain too complex (e.g. |Lemma for dta+dwds)
+	  die("expansion chain too complex for parsed DB heuristics: (".join('|',@$chain).")\n");
 	}
-
-	$rsp = $ts->dbCounts($xvals);
+	else {
+	  ##-- expansion chain looks kosher: give it a whirl
+	  if (@$chain) {
+	    print STDERR __PACKAGE__, "::genericCounts(): expand(chain=".join('|',@$chain).",terms={".join(',',@lemmata)."})\n" if ($ts->{debug});
+	    $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,\@lemmata)
+	      or die("failed to expand lemmata");
+	    foreach (@$xvals) {
+	      utf8::decode($_) if (!utf8::is_utf8($_));
+	    }
+	  }
+	  $rsp = $ts->dbCounts($xvals);
+	}
       }
     };
     return $rsp if ($rsp);
@@ -721,6 +735,26 @@ sub parseRequest {
 
 ##==============================================================================
 ## Subs: miscellaneous
+
+##----------------------------------------------------------------------
+## $str = CLASS_OR_OBJECT->unescapeDDC($str)
+sub unescapeDDC {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my $str  = shift;
+  $str =~ s{\\x\{([[:xdigit:]]+)\}}{pack('U0C',hex($1))}eg;
+  $str =~ s{\\([0-7]{1,3})}{pack('U0C',oct($1))}eg;
+  $str =~ s{\\x([[:xdigit:]]{1,2})}{pack('U',hex($1))}eg;
+  $str =~ s{\\u([[:xdigit:]]{1,8})}{pack('U',hex($1))}eg;
+  $str =~ s{\\a}{\a}g;
+  $str =~ s{\\b}{\b}g;
+  $str =~ s{\\t}{\t}g;
+  $str =~ s{\\n}{\n}g;
+  $str =~ s{\\v}{\x{0b}}g;
+  $str =~ s{\\f}{\f}g;
+  $str =~ s{\\r}{\r}g;
+  $str =~ s{\\(.)}{$1}g;
+  return $str;
+}
 
 ##----------------------------------------------------------------------
 ## $max = CLASS_OR_OBJECT->rowmax($key,\@rows)
