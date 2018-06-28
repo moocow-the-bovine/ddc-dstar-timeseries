@@ -63,13 +63,14 @@ eval {
 
 ##-- check for errors
 if ($@) {
-  print STDERR "$prog: Error: $@\n";
+  my $msg = $@;
+  print STDERR "$prog: Error: $msg\n";
   charset('utf-8');
   print
     (header(-status=>500),
      start_html('Error'),
      h1('Error'),"\n",
-     pre(escapeHTML($@)),
+     pre(escapeHTML($msg)),
      end_html);
   exit 1;
 }
