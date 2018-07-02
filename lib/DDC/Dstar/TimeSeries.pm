@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.44';
+our $VERSION = '0.45';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -36,6 +36,9 @@ our $USE_DB_PARSE = 2;
 
 ## $USE_DB_ANY : bitmask for 'useDB': fast or parse
 our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
+
+## $USE_DB_REGEX : whether to use DB for regex queries (SLOW: ($l=*ung)@kern: t(DDC)=7.3s ; t(DB)=30.5s)
+our $USE_DB_REGEX = 0;
 
 ##==============================================================================
 ## Constructors etc.
@@ -61,6 +64,7 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ##     ##
 ##     ##-- DB_File options
 ##     useDB => $mask,          ##-- try and use local DB_File if available? (0:no, 1:fast(default), 2:parse, 3:fast-or-parse)
+##     useDBRegex => $bool,     ##-- use local DB_File for regex queries too?
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
 ##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'})
 ##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'})
@@ -107,6 +111,7 @@ sub new {
 
 		##-- DB_File options
 		useDB => $USE_DB_ANY,
+		useDBRegex => $USE_DB_REGEX,
 		dbFile => (dirname($0)."/dhist.db"),
 		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
 		dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'},
@@ -268,18 +273,32 @@ sub dbCounts {
 
   ##-- variables
   my ($useGenre,$textClassKey,$UCLASS) = @$ts{qw(useGenre textClassKey textClassU)};
-
-  ##-- guts
-  print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): ", join(' ',@$lemmata), "\n" if ($ts->{debug});
   my ($lemma,%counts,$status,$key,$val, $klemma,$kdate,$kclass, $ftotal);
-  foreach $lemma (sort @$lemmata) {
-    utf8::encode($lemma) if (utf8::is_utf8($lemma));
 
-    for ($status = $tied->seq(($key="$lemma\t"),$val,&DB_File::R_CURSOR);
+  if (UNIVERSAL::isa($lemmata,'ARRAY')) {
+    ##-- guts: explicit lemma-list
+    print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): ", join(' ',@$lemmata), "\n" if ($ts->{debug});
+    foreach $lemma (sort @$lemmata) {
+      utf8::encode($lemma) if (utf8::is_utf8($lemma));
+
+      for ($status = $tied->seq(($key="$lemma\t"),$val,&DB_File::R_CURSOR);
+	   $status == 0;
+	   $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
+	($klemma,$kdate,$kclass) = split(/\t/,$key,3);
+	last if ($klemma ne $lemma);
+	$counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+      }
+    }
+  }
+  elsif (UNIVERSAL::isa($lemmata,'Regexp')) {
+    ##-- guts: regular expression (should only happen if useDBRegex was enabled)
+    print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): REGEX $lemmata\n" if ($ts->{debug});
+    $key=$val=0;
+    for ($status = $tied->seq($key,$val,&DB_File::R_FIRST);
 	 $status == 0;
 	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
-      last if ($klemma ne $lemma);
+      next if ($klemma !~ $lemmata);
       $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
     }
   }
@@ -352,33 +371,40 @@ sub genericCounts {
 	$qclass =~ s{.*::}{};
 
 	die("detected non-trivial query `$qstr'")
-	  if ($qclass !~ /^CQTok(?:Exact|Infl|Set|SetInfl)$/
+	  if ($qclass !~ /^CQTok(?:Exact|Infl|Set|SetInfl|Prefix|Infix|Suffix|Regex)$/
 	      || !exists($ts->{dbIndices}{$qindex})
 	      || @{$qobj->getOptions->getFilters//[]}
 	      || @{$qobj->getOptions->getSubcorpora//[]}
 	      || ($qclass !~ /Infl/ && $qindex eq ''));
 
-	##-- expand if requested
-	my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
-	my $xvals   = \@lemmata;
-	my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
-	@$chain     = ('-') if ($qobj->can('getExpanders') && !@$chain);
-	@$chain     = map {($_//'-') =~ /^\-?$/ ? ($ts->{dbIndices}{$qindex}//$qindex) : $_} @$chain;
-	if (grep {!exists($ts->{dbExpand}{$_})} @$chain) {
-	  ##-- expansion chain too complex (e.g. |Lemma for dta+dwds)
-	  die("expansion chain too complex for parsed DB heuristics: (".join('|',@$chain).")\n");
+	if ($qclass =~ /(?:Prefix|Infix|Suffix|Regex)$/) {
+	  ##-- special handling for regex-conditions
+	  die("detected regex query `$qstr' but useDBRegex is disabled") if (!$ts->{useDBRegex});
+	  my $qre = $ts->ddcRegex($qobj);
+	  $rsp = $ts->dbCounts($qre);
 	}
 	else {
-	  ##-- expansion chain looks kosher: give it a whirl
-	  if (@$chain) {
-	    print STDERR __PACKAGE__, "::genericCounts(): expand(chain=".join('|',@$chain).",terms={".join(',',@lemmata)."})\n" if ($ts->{debug});
-	    $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,\@lemmata)
-	      or die("failed to expand lemmata");
-	    foreach (@$xvals) {
-	      utf8::decode($_) if (!utf8::is_utf8($_));
+	  ##-- literal (set of) term-value(s): expand if requested
+	  my @lemmata = $qclass =~ /Set/ ? @{$qobj->getValues} : ($qobj->getValue);
+	  my $xvals   = \@lemmata;
+	  my $chain   = $qobj->can('getExpanders') ? $qobj->getExpanders : [];
+	  @$chain     = ('-') if ($qobj->can('getExpanders') && !@$chain);
+	  @$chain     = map {($_//'-') =~ /^\-?$/ ? ($ts->{dbIndices}{$qindex}//$qindex) : $_} @$chain;
+	  if (grep {!exists($ts->{dbExpand}{$_})} @$chain) {
+	    ##-- expansion chain too complex (e.g. |Lemma for dta+dwds)
+	    die("expansion chain too complex for parsed DB heuristics: (".join('|',@$chain).")\n");
+	  } else {
+	    ##-- expansion chain looks kosher: give it a whirl
+	    if (@$chain) {
+	      print STDERR __PACKAGE__, "::genericCounts(): expand(chain=".join('|',@$chain).",terms={".join(',',@lemmata)."})\n" if ($ts->{debug});
+	      $xvals = $ts->ensureClient(mode=>'raw')->expand($chain,\@lemmata)
+		or die("failed to expand lemmata");
+	      foreach (@$xvals) {
+		utf8::decode($_) if (!utf8::is_utf8($_));
+	      }
 	    }
+	    $rsp = $ts->dbCounts($xvals);
 	  }
-	  $rsp = $ts->dbCounts($xvals);
 	}
       }
     };
@@ -781,6 +807,36 @@ sub rowmin {
   }
   return $min;
 }
+
+##----------------------------------------------------------------------
+## $perl_regex  = CLASS_OR_OBJECT->ddcRegex($query_object)
+##  + returns a perl qr// regex for DDC::Any query object $query_object,
+##    which should be a CQ(Prefix|Infix|Suffix|Regex)
+sub ddcRegex {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my $qobj = shift;
+  return $qobj if (UNIVERSAL::isa($qobj,'Regexp'));
+
+  my ($re_str);
+  if (UNIVERSAL::isa($qobj,'DDC::Any::CQTokPrefix')) {
+    $re_str = '^'.quotemeta($qobj->getValue);
+  }
+  elsif (UNIVERSAL::isa($qobj,'DDC::Any::CQTokSuffix')) {
+    $re_str = quotemeta($qobj->getValue).'$';
+  }
+  elsif (UNIVERSAL::isa($qobj,'DDC::Any::CQTokSuffix')) {
+    $re_str = quotemeta($qobj->getValue);
+  }
+  elsif (UNIVERSAL::isa($qobj,'DDC::Any::CQTokRegex')) {
+    $re_str = $qobj->getValue;
+  }
+  else {
+    die(__PACKAGE__, "::ddcRegex(): failed to extract regex from query (", $qobj->toStringFull, ")");
+  }
+
+  return qr{$re_str};
+}
+
 
 
 ##==============================================================================
