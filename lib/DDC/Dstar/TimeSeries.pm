@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.45';
+our $VERSION = '0.46';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -37,7 +37,16 @@ our $USE_DB_PARSE = 2;
 ## $USE_DB_ANY : bitmask for 'useDB': fast or parse
 our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 
-## $USE_DB_REGEX : whether to use DB for regex queries (SLOW: ($l=*ung)@kern: t(DDC)=7.3s ; t(DB)=30.5s)
+## $USE_DB_PREFIX : whether to use DB for prefix queries (fast)
+our $USE_DB_PREFIX = 1;
+
+## $USE_DB_SUFFIX : whether to use DB for suffix queries if present or auto-creatable (fast)
+our $USE_DB_SUFFIX = 1;
+
+## $CREATE_SUFFIX_DB : whether to auto-create suffix-DB (very slow)
+our $CREATE_SUFFIX_DB = 0;
+
+## $USE_DB_REGEX : whether to use DB for generic regex queries (SLOW: ($l=/ung$/)@kern: t(DDC)=7.3s ; t(DB)=30.5s)
 our $USE_DB_REGEX = 0;
 
 ##==============================================================================
@@ -64,7 +73,10 @@ our $USE_DB_REGEX = 0;
 ##     ##
 ##     ##-- DB_File options
 ##     useDB => $mask,          ##-- try and use local DB_File if available? (0:no, 1:fast(default), 2:parse, 3:fast-or-parse)
-##     useDBRegex => $bool,     ##-- use local DB_File for regex queries too?
+##     useDBPrefix => $bool,     ##-- use local DB_File for prefix queries? (fast)
+##     useDBSuffix => $bool,     ##-- use local DB_File for suffix queries? (may be very slow, auto-generates suffix-db)
+##     createSuffixDB => $bool,  ##-- auto-create suffix-db if required? (very slow)
+##     useDBRegex => $bool,     ##-- use local DB_File for generic regex queries? (SLOW)
 ##     dbFile => $dbfile,       ##-- filename of local db (Berkeley DB; default="dhist.db")
 ##     dbIndices => \%indices,  ##-- indices for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'})
 ##     dbExpand => \%expand,    ##-- expanders for which to allow local DB queries (default={Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'})
@@ -90,6 +102,8 @@ our $USE_DB_REGEX = 0;
 ##     vars => \%vars,          ##-- parsed CGI request
 ##     dbhash => \%dbhash,      ##-- tied hash
 ##     dbtied => \$tied,        ##-- tied(%dbhash)
+##     dbhashr => \%dbhashr,    ##-- tied hash (reversed lemmata, for suffix queries)
+##     dbtiedr => \$tiedr,      ##-- tied(%dbhashr)
 ##    )
 sub new {
   my $that = shift;
@@ -111,7 +125,10 @@ sub new {
 
 		##-- DB_File options
 		useDB => $USE_DB_ANY,
+		useDBPrefix => $USE_DB_PREFIX,
+		useDBSuffix => $USE_DB_SUFFIX,
 		useDBRegex => $USE_DB_REGEX,
+		createSuffixDB => $CREATE_SUFFIX_DB,
 		dbFile => (dirname($0)."/dhist.db"),
 		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
 		dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'},
@@ -264,8 +281,55 @@ sub ensureDB {
 }
 
 ##----------------------------------------------------------------------
+## $tied_or_undef = $ts->ensureDBr()
+sub ensureDBr {
+  my $ts = shift;
+  return undef if (!$ts->wantDB || !$ts->{useDBSuffix});
+  return $ts->{dbtiedr} if (defined($ts->{dbtiedr}));
+
+  my $tied    = $ts->ensureDB() or return undef;
+  my $dbhashr = $ts->{dbhashr} = {};
+  if (-e "$ts->{dbFile}r" && (!$ts->{createSuffixDB} || (file_mtime("$ts->{dbFile}r") >= file_mtime($ts->{dbFile})))) {
+    ##-- open existing suffix database
+    $ts->cachedebug("ensureDBr(): opening suffix DB $ts->{dbFile}r");
+    if (!tie(%$dbhashr, 'DB_File', "$ts->{dbFile}r", O_RDONLY, 0644, $DB_File::DB_BTREE)) {
+      warn(__PACKAGE__, "::ensureDB(): failed to tie suffix DB_File '$ts->{dbFile}r': $!");
+      return undef;
+    }
+  }
+  elsif ($ts->{createSuffixDB}) {
+    ##-- auto-create suffix database
+    $ts->cachedebug("ensureDBr(): auto-creating suffix DB $ts->{dbFile}r");
+    if (!tie(%$dbhashr, 'DB_File', "$ts->{dbFile}r", O_RDWR|O_CREAT|O_TRUNC, 0644, $DB_File::DB_BTREE)) {
+      warn(__PACKAGE__, "::ensureDBr(): failed to auto-create suffix DB_File '$ts->{dbFile}r': $!");
+      return undef;
+    }
+    my ($status,$key,$val, $klemma,$krest,$rkey);
+    $key=$val=0;
+    for ($status = $tied->seq($key,$val,&DB_File::R_FIRST);
+	 $status == 0;
+	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
+      ($klemma,$krest) = split(/\t/,$key,2);
+      $rkey = join('',reverse(split(//,$klemma)))."\t".$krest;
+      $dbhashr->{$rkey} = $val;
+    }
+    $ts->cachedebug("ensureDBr(): suffix DB $ts->{dbFile}r created");
+  }
+  else {
+    warn(__PACKAGE__, "::ensureDBr(): failed to open suffix DB $ts->{dbFile}r");
+    return undef;
+  }
+
+  $ts->{dbtiedr} = tied(%$dbhashr);
+  return $ts->{dbtiedr};
+}
+
+##----------------------------------------------------------------------
 ## $responseData = $ts->dbCounts(\@lemmata)
-##  + variant of ddcCounts() using explicit lemma list
+## $responseData = $ts->dbCounts($prefixQueryObject)
+## $responseData = $ts->dbCounts($suffixQueryObject)
+## $responseData = $ts->dbCounts(qr/REGEX/)
+##  + variant of ddcCounts() using explicit lemma list to query a local DB
 sub dbCounts {
   my ($ts,$lemmata) = @_;
   my $tied = $ts->ensureDB()
@@ -290,6 +354,44 @@ sub dbCounts {
       }
     }
   }
+  elsif (UNIVERSAL::isa($lemmata,'DDC::Any::CQTokPrefix')) {
+    ##-- guts: prefix query (should only happen if useDBPrefix was enabled)
+    my $prefix = $lemmata->getValue;
+    if ($ts->{debug}) {
+      utf8::decode($prefix) if (!utf8::is_utf8($prefix));
+      print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): PREFIX $prefix\n";
+    }
+
+    utf8::encode($prefix) if (utf8::is_utf8($prefix));
+    for ($status = $tied->seq(($key="$prefix"),$val,&DB_File::R_CURSOR);
+	 $status == 0;
+	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
+      ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
+      last if (substr($klemma,0,length($prefix)) ne $prefix);
+      $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+    }
+  }
+  elsif (UNIVERSAL::isa($lemmata,'DDC::Any::CQTokSuffix')) {
+    ##-- guts: suffix query (should only happen if useDBSuffix was enabled)
+    my $rtied = $ts->ensureDBr()
+      or die(__PACKAGE__, "::dbCounts(): local suffix DB ".($ts->{dbFile}//'-undef-')."r not available");
+
+    my $suffix = $lemmata->getValue;
+    if ($ts->{debug}) {
+      utf8::decode($suffix) if (!utf8::is_utf8($suffix));
+      print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): SUFFIX $suffix\n";
+    }
+
+    my $rsuffix = join('',reverse(split(//,$suffix)));
+    utf8::encode($rsuffix) if (utf8::is_utf8($rsuffix));
+    for ($status = $rtied->seq(($key="$rsuffix"),$val,&DB_File::R_CURSOR);
+	 $status == 0;
+	 $status = $rtied->seq($key,$val,&DB_File::R_NEXT)) {
+      ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
+      last if (substr($klemma,0,length($rsuffix)) ne $rsuffix);
+      $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+    }
+  }
   elsif (UNIVERSAL::isa($lemmata,'Regexp')) {
     ##-- guts: regular expression (should only happen if useDBRegex was enabled)
     print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): REGEX $lemmata\n" if ($ts->{debug});
@@ -301,6 +403,9 @@ sub dbCounts {
       next if ($klemma !~ $lemmata);
       $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
     }
+  }
+  else {
+    die(__PACKAGE__, "::dbCounts(): can't handle query request of type ".(ref($lemmata)||'(scalar)')." with local DB");
   }
 
   return {counts_=>[map {[$counts{$_},split(/\t/,$_,2)]} keys %counts]};
@@ -377,8 +482,16 @@ sub genericCounts {
 	      || @{$qobj->getOptions->getSubcorpora//[]}
 	      || ($qclass !~ /Infl/ && $qindex eq ''));
 
-	if ($qclass =~ /(?:Prefix|Infix|Suffix|Regex)$/) {
-	  ##-- special handling for regex-conditions
+	if ($qclass =~ /Prefix$/ && $ts->{useDBPrefix}) {
+	  ##-- special handling for prefix-conditions
+	  $rsp = $ts->dbCounts($qobj);
+	}
+	elsif ($qclass =~ /Suffix$/ && $ts->{useDBSuffix}) {
+	  ##-- special handling for suffix-conditions
+	  $rsp = $ts->dbCounts($qobj);
+	}
+	elsif ($qclass =~ /(?:Prefix|Infix|Suffix|Regex)$/) {
+	  ##-- special handling for generic regex-conditions
 	  die("detected regex query `$qstr' but useDBRegex is disabled") if (!$ts->{useDBRegex});
 	  my $qre = $ts->ddcRegex($qobj);
 	  $rsp = $ts->dbCounts($qre);

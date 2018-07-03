@@ -12,6 +12,10 @@ use CGI qw(:standard :cgi-lib);
 use Encode qw(decode_utf8 encode_utf8);
 use strict;
 
+BEGIN {
+  binmode(STDERR,':utf8');
+}
+
 ##------------------------------------------------------------------------------
 ## Globals
 
