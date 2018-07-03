@@ -40,7 +40,7 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ## $USE_DB_PREFIX : whether to use DB for prefix queries (fast)
 our $USE_DB_PREFIX = 1;
 
-## $USE_DB_SUFFIX : whether to use DB for suffix queries if present or auto-creatable (fast)
+## $USE_DB_SUFFIX : whether to use suffix-DB for suffix queries if present or auto-creatable (fast)
 our $USE_DB_SUFFIX = 1;
 
 ## $CREATE_SUFFIX_DB : whether to auto-create suffix-DB (very slow)
