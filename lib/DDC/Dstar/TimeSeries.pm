@@ -40,7 +40,7 @@ our $USE_DB_ANY = ($USE_DB_FAST | $USE_DB_PARSE);
 ## $USE_DB_PREFIX : whether to use DB for prefix queries (fast)
 our $USE_DB_PREFIX = 1;
 
-## $USE_DB_SUFFIX : whether to use DB for suffix queries if present or auto-creatable (fast)
+## $USE_DB_SUFFIX : whether to use suffix-DB for suffix queries if present or auto-creatable (fast)
 our $USE_DB_SUFFIX = 1;
 
 ## $CREATE_SUFFIX_DB : whether to auto-create suffix-DB (very slow)
@@ -304,14 +304,19 @@ sub ensureDBr {
       warn(__PACKAGE__, "::ensureDBr(): failed to auto-create suffix DB_File '$ts->{dbFile}r': $!");
       return undef;
     }
-    my ($status,$key,$val, $klemma,$krest,$rkey);
+    my ($status,$key,$val, $klemma,$krest);
     $key=$val=0;
     for ($status = $tied->seq($key,$val,&DB_File::R_FIRST);
 	 $status == 0;
 	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$krest) = split(/\t/,$key,2);
-      $rkey = join('',reverse(split(//,$klemma)))."\t".$krest;
-      $dbhashr->{$rkey} = $val;
+
+      utf8::decode($klemma) if (!utf8::is_utf8($klemma));
+      $klemma = join('',reverse(split(//,$klemma)));  ##-- keep UTF-8 bytes in correct order
+      utf8::encode($klemma) if (utf8::is_utf8($klemma));
+      utf8::encode($krest)  if (utf8::is_utf8($krest));
+
+      $dbhashr->{"$klemma\t$krest"} = $val;
     }
     $ts->cachedebug("ensureDBr(): suffix DB $ts->{dbFile}r created\n");
   }
@@ -377,10 +382,8 @@ sub dbCounts {
       or die(__PACKAGE__, "::dbCounts(): local suffix DB ".($ts->{dbFile}//'-undef-')."r not available");
 
     my $suffix = $lemmata->getValue;
-    if ($ts->{debug}) {
-      utf8::decode($suffix) if (!utf8::is_utf8($suffix));
-      print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): SUFFIX $suffix\n";
-    }
+    utf8::decode($suffix) if (!utf8::is_utf8($suffix));
+    print STDERR __PACKAGE__, "::dbCounts($ts->{dbFile}): SUFFIX $suffix\n" if ($ts->{debug});
 
     my $rsuffix = join('',reverse(split(//,$suffix)));
     utf8::encode($rsuffix) if (utf8::is_utf8($rsuffix));
