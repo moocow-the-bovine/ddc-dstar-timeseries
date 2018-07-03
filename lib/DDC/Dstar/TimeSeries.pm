@@ -291,7 +291,7 @@ sub ensureDBr {
   my $dbhashr = $ts->{dbhashr} = {};
   if (-e "$ts->{dbFile}r" && (!$ts->{createSuffixDB} || (file_mtime("$ts->{dbFile}r") >= file_mtime($ts->{dbFile})))) {
     ##-- open existing suffix database
-    $ts->cachedebug("ensureDBr(): opening suffix DB $ts->{dbFile}r");
+    $ts->cachedebug("ensureDBr(): opening suffix DB $ts->{dbFile}r\n");
     if (!tie(%$dbhashr, 'DB_File', "$ts->{dbFile}r", O_RDONLY, 0644, $DB_File::DB_BTREE)) {
       warn(__PACKAGE__, "::ensureDB(): failed to tie suffix DB_File '$ts->{dbFile}r': $!");
       return undef;
@@ -299,7 +299,7 @@ sub ensureDBr {
   }
   elsif ($ts->{createSuffixDB}) {
     ##-- auto-create suffix database
-    $ts->cachedebug("ensureDBr(): auto-creating suffix DB $ts->{dbFile}r");
+    $ts->cachedebug("ensureDBr(): auto-creating suffix DB $ts->{dbFile}r\n");
     if (!tie(%$dbhashr, 'DB_File', "$ts->{dbFile}r", O_RDWR|O_CREAT|O_TRUNC, 0644, $DB_File::DB_BTREE)) {
       warn(__PACKAGE__, "::ensureDBr(): failed to auto-create suffix DB_File '$ts->{dbFile}r': $!");
       return undef;
@@ -313,10 +313,10 @@ sub ensureDBr {
       $rkey = join('',reverse(split(//,$klemma)))."\t".$krest;
       $dbhashr->{$rkey} = $val;
     }
-    $ts->cachedebug("ensureDBr(): suffix DB $ts->{dbFile}r created");
+    $ts->cachedebug("ensureDBr(): suffix DB $ts->{dbFile}r created\n");
   }
   else {
-    warn(__PACKAGE__, "::ensureDBr(): failed to open suffix DB $ts->{dbFile}r");
+    warn(__PACKAGE__, "::ensureDBr(): failed to open suffix DB $ts->{dbFile}r\n");
     return undef;
   }
 
