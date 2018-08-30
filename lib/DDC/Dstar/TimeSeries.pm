@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.46';
+our $VERSION = '0.47';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -236,8 +236,12 @@ sub ddcCounts {
   ##  + eliminate them here & parse requested genres elsewhere!
   #my $gconds = (@genres && $textClassKey ? (" #has[${textClassKey},/^(?:".join('|',@genres).")\\b/]") : '');
 
+  ##-- hack: extract & preserve ddc-v2.1.16 lexer comments
+  my $cmts = '';
+  $qconds  =~ s{\s*(?:(?:#:[^\n]*\n?)|(?:#\[[^\]]*\]))}{$cmts .= ${^MATCH}; ''}gpe;
+
   my $gkey = ($ts->{useGenre} && $ts->{textClassKey} ? "$ts->{textClassKey}~s/:.*//" : "@\'$ts->{textClassU}'");
-  my $qstr = "count($qconds #sep) #by[date/1,$gkey]"; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
+  my $qstr = "count($qconds #sep) #by[date/1,$gkey]".$cmts; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
   $ts->ensureClient(mode=>'json', %opts);
   print STDERR __PACKAGE__, "::ddcCounts($ts->{client}{connect}{PeerAddr}:$ts->{client}{connect}{PeerPort}): $qstr\n" if ($ts->{debug});
   my $rsp  = $ts->{client}->queryRaw($qstr)
@@ -429,6 +433,14 @@ sub luniq {
 sub genericCounts {
   my ($ts,$qstr,%ddcClientOpts) = @_;
 
+  ##-- hack: ignore ddc-v2.1.16 lexer comments, sanitize query string
+  my $qstr_in = $qstr;
+  $qstr =~ s/#:[^\n]*//sg;
+  $qstr =~ s/\#\[[^\]]*\]//sg;
+  $qstr =~ s/^\s+//s;
+  $qstr =~ s/\s+$//s;
+  print STDERR __PACKAGE__, "::genericCounts(): sanitized query string = \`$qstr'\n" if ($ts->{debug});
+
   if ($ts->wantDB && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
     ##-- try DB_File query
     my ($rsp);
@@ -470,15 +482,15 @@ sub genericCounts {
 	DDC::Any->import if (!$DDC::Any::WHICH);
 	die("no DDC query parser implementation") if (!$DDC::Any::WHICH);
 
-	my $qobj = eval { ref($qstr) ? $qstr : DDC::Any->parse($qstr) };
-	die("failed to parse query-string '$qstr' ".($@ ? ": $@" : '')) if (!$qobj);
+	my $qobj = eval { ref($qstr_in) ? $qstr_in : DDC::Any->parse($qstr_in) };
+	die("failed to parse query-string '$qstr_in' ".($@ ? ": $@" : '')) if (!$qobj);
 
 	##-- can we realistically handle this query with the DB?
 	my $qindex = ($qobj->can('getIndexName') ? $qobj->getIndexName : undef) // '';
 	my $qclass = ref($qobj) // '';
 	$qclass =~ s{.*::}{};
 
-	die("detected non-trivial query `$qstr'")
+	die("detected non-trivial query `$qstr_in'")
 	  if ($qclass !~ /^CQTok(?:Exact|Infl|Set|SetInfl|Prefix|Infix|Suffix|Regex)$/
 	      || !exists($ts->{dbIndices}{$qindex})
 	      || @{$qobj->getOptions->getFilters//[]}
@@ -495,7 +507,7 @@ sub genericCounts {
 	}
 	elsif ($qclass =~ /(?:Prefix|Infix|Suffix|Regex)$/) {
 	  ##-- special handling for generic regex-conditions
-	  die("detected regex query `$qstr' but useDBRegex is disabled") if (!$ts->{useDBRegex});
+	  die("detected regex query `$qstr_in' but useDBRegex is disabled") if (!$ts->{useDBRegex});
 	  my $qre = $ts->ddcRegex($qobj);
 	  $rsp = $ts->dbCounts($qre);
 	}
@@ -528,7 +540,7 @@ sub genericCounts {
     print STDERR __PACKAGE__, "::genericCounts(): fetch from local DB failed: ", ($@||"???\n") if ($ts->{debug});
   }
 
-  return $ts->ddcCounts($qstr,%ddcClientOpts);
+  return $ts->ddcCounts($qstr_in,%ddcClientOpts);
 }
 
 
