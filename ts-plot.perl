@@ -51,7 +51,6 @@ our $vars = {};
 if (param()) {
   $vars = { Vars() }; ##-- copy tied Vars()-hash, otherwise utf8 flag gets handled wrong!
 }
-$vars->{query} = "Talent #SEPARATE" if (getpwuid($<) eq 'moocow'); ##-- DEBUG
 $ts->parseRequest($vars)
   or die("$prog: failed to parse user request");
 
