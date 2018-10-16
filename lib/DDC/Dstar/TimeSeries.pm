@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.47';
+our $VERSION = '0.48';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -435,6 +435,12 @@ sub genericCounts {
 
   ##-- hack: ignore ddc-v2.1.16 lexer comments, sanitize query string
   my $qstr_in = $qstr;
+  $qstr =~ s{
+	      (?:\#(?:sep(?:arate)?|nojoin)(?:_hits)?)  ##-- #SEPARATE is implicit
+	     |(?:\#(?:nosep(arate)?|join)(_hits)?)      ##-- #JOIN gets clobbered
+             |(?:\#debug_rank)                          ##-- #DEBUG_RANK is vacuous for count()-queries
+             |(?:\#(co?n?te?xt?|n))                     ##-- #CNTXT is vacuous for count()-queries
+	    }{}sgix;
   $qstr =~ s/#:[^\n]*//sg;
   $qstr =~ s/\#\[[^\]]*\]//sg;
   $qstr =~ s/^\s+//s;
