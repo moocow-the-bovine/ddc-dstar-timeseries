@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.48';
+our $VERSION = '0.49';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -232,7 +232,7 @@ sub ddcCounts {
   my ($ts,$qconds,%opts) = @_;
 
   ## Mon, 15 Feb 2016 13:54:09 +0100 moocow
-  ##  + #has[textClass,/REGEX/] queries are expensive (~1600 slower than without)
+  ##  + #has[textClass,/REGEX/] queries are expensive (~1600x slower than without)
   ##  + eliminate them here & parse requested genres elsewhere!
   #my $gconds = (@genres && $textClassKey ? (" #has[${textClassKey},/^(?:".join('|',@genres).")\\b/]") : '');
 
@@ -1171,16 +1171,16 @@ sub plotFill {
     my ($key);
     foreach (keys %$counts) {
       ($key=$_) =~ s/(?<=\t).*$/$UCLASS/;
-      $counts->{$key} += $counts->{$_};
+      $counts->{$key} += $counts->{$_} if ($_ ne $key); ##-- don't double counts
     }
     foreach (keys %$dc2f) {
       ($key=$_) =~ s/(?<=\t).*$/$UCLASS/;
-      $dc2f->{$key} += $dc2f->{$_};
+      $dc2f->{$key} += $dc2f->{$_} if ($_ ne $key); ##-- don't double counts
     }
     foreach (keys %$c2f) {
-      $c2f->{$UCLASS} += $c2f->{$_};
+      $c2f->{$UCLASS} += $c2f->{$_} if ($_ ne $UCLASS); ##-- don't double counts
     }
-    push(@{$vars->{classes}},$UCLASS);
+    push(@{$vars->{classes}},$UCLASS) if (!grep {$_ eq $UCLASS} @{$vars->{classes}});
   }
 
   ##-- guts: fill gaps
