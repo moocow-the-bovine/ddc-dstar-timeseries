@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.49';
+our $VERSION = '0.50';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -63,6 +63,13 @@ our $USE_DB_REGEX = 0;
 ##      server_port => $port,   ##   - DDC server port
 ##      corpus => $corpus,      ##   - DDC corpus label
 ##      hist_enabled => $bool,  ##   - histograms enabled?
+##      ##
+##      ##-- stringification options (also available as globals)
+##      stringifyComments => $bool,	##-- default=1
+##      stringifyRoles => $bool,	##-- default=1
+##      stringifyUser => $bool,		##-- default=1
+##      stringifyPeer => $bool,		##-- default=1
+##      stringifyOriginal => $bool,	##-- default=1
 ##     },
 ##     timeout => $timeout,     ##-- DDC client timeout (seconds)
 ##     limit => $limit,         ##-- DDC client limit (number of rows)
@@ -115,6 +122,12 @@ sub new {
 			  server_port => '52000',
 			  corpus => 'corpus',
 			  hist_enabled => 'yes',
+			  ##
+			  stringifyComments => 1,
+			  stringifyOriginal => 1,
+			  stringifyUser => 1,
+			  stringifyPeer => 1,
+			  stringifyRoles => 1,
 			 },
 		timeout => 300,
 		limit => 16384,
@@ -179,7 +192,15 @@ sub loadConfig {
 
     my ($sym,$ref);
     foreach $sym (keys %DDC::Dstar::TimeSeries::Config::) {
-      if     ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{HASH}) )   { $ts->{$sym} = $ref; }
+      if     ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{HASH}) ) {
+	if (!defined($ts->{$sym})) {
+	  ##-- HASH: adopt
+	  $ts->{$sym} = $ref;
+	} else {
+	  ##-- HASH: merge (clobber)
+	  @{$ts->{$sym}}{keys %$ref} = values %$ref;
+	}
+      }
       elsif  ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{ARRAY}) )  { $ts->{$sym} = $ref; }
       elsif  ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{CODE}) )   { $ts->{$sym} = $ref; }
       elsif  ( ($ref=*{"DDC::Dstar::TimeSeries::Config::$sym"}{SCALAR}) ) { $ts->{$sym} = $$ref; }
@@ -239,6 +260,30 @@ sub ddcCounts {
   ##-- hack: extract & preserve ddc-v2.1.16 lexer comments
   my $cmts = '';
   $qconds  =~ s{\s*(?:(?:#:[^\n]*\n?)|(?:#\[[^\]]*\]))}{$cmts .= ${^MATCH}; ''}gpe;
+
+  ##-- hack: insert ddc-v2.1.16 lexer comments if requested
+  if ($ts->{dstar}{stringifyComments}) {
+    $cmts  = "\n$cmts" if ($cmts !~ /^\s*\R/);
+    if ($ts->{dstar}{stringifyOriginal} && $cmts !~ /#:=/) {
+      my $ostr = $qconds;
+      $ostr =~ s/\n/ /sg;
+      $cmts .= "#:=$ostr\n";
+    }
+    if ($ts->{dstar}{stringifyRoles} && $cmts !~ /#:~/) {
+      $cmts .= "#:~dstar plot\n";
+    }
+    if (($ts->{dstar}{stringifyUser} || $ts->{dstar}{stringifyPeer}) && $cmts !~ /#:</) {
+      $cmts .= ("#:<"
+		.($ts->{dstar}{stringifyUser} ? ($ENV{REMOTE_USER} || "anonymous") : '?')
+		.'@'
+		.($ts->{dstar}{stringifyPeer} ? ($ENV{REMOTE_HOST} || $ENV{REMOTE_ADR} || '?') : '-')
+		."\n")
+    }
+    $cmts =~ s/\n+\z//;
+  } else {
+    #warn("comments disabled");
+    $cmts = ''; ##-- supress even inherited comments
+  }
 
   my $gkey = ($ts->{useGenre} && $ts->{textClassKey} ? "$ts->{textClassKey}~s/:.*//" : "@\'$ts->{textClassU}'");
   my $qstr = "count($qconds #sep) #by[date/1,$gkey]".$cmts; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
@@ -1021,7 +1066,7 @@ sub plotCleanup {
 sub plotInitialize {
   my $ts = shift;
   my $vars = ($ts->{vars} //= {});
-  $ts->cachedebug("plotInitialize()\n");
+  $ts->cachedebug("plotInitialize(): ", __PACKAGE__, " v$VERSION\n");
 
   ##-- variable defaults
   $vars->{prune} = 0.05 if ($vars->{bare} && ($vars->{prune}//'') eq ''); ##-- default prune=.05 for 'bare' plots
@@ -1032,6 +1077,7 @@ sub plotInitialize {
   ##-- dump vars (debug)
   # v-- errors "Thread 1 terminated abnormally: hash- or arrayref expected (not a simple scalar, use allow_nonref to allow this) at /usr/share/perl5/JSON.pm line 154."
   #     when running under forks.pm
+  print STDERR "$ts->{prog} dstar: ", JSON::to_json($ts->{dstar},{utf8=>0,pretty=>1}), "\n" if ($ts->{debug});
   print STDERR "$ts->{prog} variables: ", JSON::to_json($vars,{utf8=>0,pretty=>1}), "\n" if ($ts->{debug});
 
   ##-- variable-dependent conveniences
