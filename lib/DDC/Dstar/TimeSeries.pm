@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.50';
+our $VERSION = '0.51';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -246,6 +246,7 @@ sub ddcRequest {
     or die(__PACKAGE__, "::ddcRequest(): no response to request `$reqstr'");
   return from_json($rsp,{utf8=>(utf8::is_utf8($rsp) ? 0 : 1)});
 }
+
 
 ##----------------------------------------------------------------------
 ## $responseData = $ts->ddcCounts($ddcQueryConditions, %ddcClientOpts)
@@ -768,11 +769,11 @@ sub ensureCache {
 
     ##-- populate cache data
     my $cache = {};
-    my %classes = @{$ts->{genres}} ? (map {($_=>undef)} @{$ts->{genres}}) : qw();
+    my %classes = $ts->{useGenre} && @{$ts->{genres}//[]} ? (map {($_=>undef)} @{$ts->{genres}//[]}) : qw();
     foreach (@{$data->{counts_}}) {
       $_->[2] //= '';
       $_->[2] =~ s/:.*//;
-      next if (($ts->{useGenre} && $_->[2] eq '') || (@{$ts->{genres}} && !exists($classes{$_->[2]})));
+      next if (($ts->{useGenre} && $_->[2] eq '') || (%classes && !exists($classes{$_->[2]})));
       $cache->{"$_->[1]\t$_->[2]"} += $_->[0];
     }
 
@@ -1119,6 +1120,8 @@ sub plotInitialize {
   $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset}\n");
 
   ##-- genre variables
+  warn(__PACKAGE__, "::plotInitialize(): WARNING: {useGenre} is false, but {genres} is neither empty nor the singleton {textClassU}: expect weirdness")
+    if (!$ts->{useGenre} && @{$ts->{genres}//[]}>=1 && $ts->{textClassU} ne $ts->{genres}[0]);
   if (!@{$ts->{genres}//[]}) {
     $ts->ensureCache();
     my %genres = (map {(split(/\t/,$_))[1]=>undef} keys %{$ts->{cache}});
