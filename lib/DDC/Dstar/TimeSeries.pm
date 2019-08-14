@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.51';
+our $VERSION = '0.52';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -405,7 +405,7 @@ sub dbCounts {
 	   $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
 	($klemma,$kdate,$kclass) = split(/\t/,$key,3);
 	last if ($klemma ne $lemma);
-	$counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+	$counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
       }
     }
   }
@@ -423,7 +423,7 @@ sub dbCounts {
 	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
       last if (substr($klemma,0,length($prefix)) ne $prefix);
-      $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+      $counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
     }
   }
   elsif (UNIVERSAL::isa($lemmata,'DDC::Any::CQTokSuffix')) {
@@ -442,7 +442,7 @@ sub dbCounts {
 	 $status = $rtied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
       last if (substr($klemma,0,length($rsuffix)) ne $rsuffix);
-      $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+      $counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
     }
   }
   elsif (UNIVERSAL::isa($lemmata,'Regexp')) {
@@ -454,7 +454,7 @@ sub dbCounts {
 	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
       next if ($klemma !~ $lemmata);
-      $counts{$kdate."\t".($useGenre && $textClassKey ? $kclass : $UCLASS)} += $val;
+      $counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
     }
   }
   else {
