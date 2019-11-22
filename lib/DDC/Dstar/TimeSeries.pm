@@ -500,7 +500,6 @@ sub genericCounts {
   $qstr =~ s/\#\[[^\]]*\]//sg;
   $qstr =~ s/^\s+//s;
   $qstr =~ s/\s+$//s;
-  $qstr =~ 
   print STDERR __PACKAGE__, "::genericCounts(): sanitized query string = \`$qstr'\n" if ($ts->{debug});
 
   if ($ts->wantDB && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
