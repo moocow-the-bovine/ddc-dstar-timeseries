@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.52';
+our $VERSION = '0.53';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -486,11 +486,21 @@ sub genericCounts {
 	     |(?:\#(?:nosep(arate)?|join)(_hits)?)      ##-- #JOIN gets clobbered
              |(?:\#debug_rank)                          ##-- #DEBUG_RANK is vacuous for count()-queries
              |(?:\#(co?n?te?xt?|n))                     ##-- #CNTXT is vacuous for count()-queries
+             |(?:\#rand(?:om)?(?:\s*\[[0-9]*\])?)	##-- #RANDOM is vacuous for count()-queries
+             |(?:\#(?:less|asc|greater|de?sc)		##-- vacuous builtin sort operators
+                 (?:_by)?
+                 (?:_rank|_date|_size|_left|_right|_mid(?:dle))
+                 (?:(?:\s*\[\s*\])
+                   |(?!\s*\[)))
+             |(?:(?:\#(?:less|asc|greater|de?sc)	##-- vacuous metadata sort operators
+                 (?:_by)?
+                 \s*\[[^,\]]+,*\]))
 	    }{}sgix;
   $qstr =~ s/#:[^\n]*//sg;
   $qstr =~ s/\#\[[^\]]*\]//sg;
   $qstr =~ s/^\s+//s;
   $qstr =~ s/\s+$//s;
+  $qstr =~ 
   print STDERR __PACKAGE__, "::genericCounts(): sanitized query string = \`$qstr'\n" if ($ts->{debug});
 
   if ($ts->wantDB && $qstr !~ m{[\s\#\[\]\"]|[\&\|]{2,}}) {
