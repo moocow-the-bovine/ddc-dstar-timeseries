@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.53';
+our $VERSION = '0.54';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -405,6 +405,7 @@ sub dbCounts {
 	   $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
 	($klemma,$kdate,$kclass) = split(/\t/,$key,3);
 	last if ($klemma ne $lemma);
+        utf8::decode($kclass) if ($useGenre && $textClassKey && $kclass && !utf8::is_utf8($kclass));
 	$counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
       }
     }
@@ -423,6 +424,7 @@ sub dbCounts {
 	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
       last if (substr($klemma,0,length($prefix)) ne $prefix);
+      utf8::decode($kclass) if ($useGenre && $textClassKey && $kclass && !utf8::is_utf8($kclass));
       $counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
     }
   }
@@ -442,6 +444,7 @@ sub dbCounts {
 	 $status = $rtied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
       last if (substr($klemma,0,length($rsuffix)) ne $rsuffix);
+      utf8::decode($kclass) if ($useGenre && $textClassKey && $kclass && !utf8::is_utf8($kclass));
       $counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
     }
   }
@@ -454,6 +457,7 @@ sub dbCounts {
 	 $status = $tied->seq($key,$val,&DB_File::R_NEXT)) {
       ($klemma,$kdate,$kclass) = split(/\t/,$key,3);
       next if ($klemma !~ $lemmata);
+      utf8::decode($kclass) if ($useGenre && $textClassKey && $kclass && !utf8::is_utf8($kclass));
       $counts{$kdate."\t".($useGenre && $textClassKey ? ($kclass//'') : $UCLASS)} += $val;
     }
   }
