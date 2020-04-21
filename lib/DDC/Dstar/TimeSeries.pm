@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.55';
+our $VERSION = '0.56';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -95,7 +95,8 @@ our $USE_DB_REGEX = 0;
 ##     cacheFile => $file,      ##-- JSON file to load/store cache (undef=always update)
 ##     cacheMinAge => $secs,    ##-- minimum cache age for auto-update (in seconds, e.g. 60*60*24*7 ~ 1 week; undef=no minimum)
 ##     cacheUseInfo => $bool,   ##-- use slower but more reliable server 'info' request to get server timestamp? (default=0)
-##     textClassKey => $key,    ##-- ddc-indexed textClass meta-attribute
+##     textClassKey => $key,    ##-- ddc-indexed textClass meta-attribute (should be merged with 'textClassTweak')
+##     textClassTweak => $suff, ##-- ddc textClass meta-attribute count-by suffix ('~s/:.*//')
 ##     textClassU => $uclass,   ##-- "universal" genre for single-plot or grand-average mode
 ##     xBarClass => $xclass,    ##-- long x-bar class for bare plots
 ##     gpVersion => $version,   ##-- underlying gnuplot version string (output of `gnuplot --version`)
@@ -154,6 +155,7 @@ sub new {
 		cacheMinAge => undef,
 		cacheUseInfo => 0,
 		textClassKey => 'textClass',
+                textClassTweak => '~s/:.*//',
 		textClassU => 'Gesamt',
 		xBarClass => '__XBARS__',
 
@@ -286,7 +288,9 @@ sub ddcCounts {
     $cmts = ''; ##-- supress even inherited comments
   }
 
-  my $gkey = ($ts->{useGenre} && $ts->{textClassKey} ? "$ts->{textClassKey}~s/:.*//" : "@\'$ts->{textClassU}'");
+  my $gkey = ($ts->{useGenre} && $ts->{textClassKey}
+              ? ($ts->{textClassKey}.($ts->{textClassTweak}||''))
+              : "@\'$ts->{textClassU}'");
   my $qstr = "count($qconds #sep) #by[date/1,$gkey]".$cmts; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
   $ts->ensureClient(mode=>'json', %opts);
   print STDERR __PACKAGE__, "::ddcCounts($ts->{client}{connect}{PeerAddr}:$ts->{client}{connect}{PeerPort}): $qstr\n" if ($ts->{debug});
@@ -721,8 +725,8 @@ sub saveCache {
   my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
   my ($cache,$file) = @_;
   #return Storable::nstore($cache,$file);
-  open(my $fh,">$file") or die(__PACKAGE__, "::saveCache(): open failed for $file: $!");
-  print $fh to_json($cache, {ascii=>1,pretty=>1});
+  open(my $fh,">:utf8", "$file") or die(__PACKAGE__, "::saveCache(): open failed for $file: $!");
+  print $fh to_json($cache, {utf8=>0,pretty=>1});
   close $fh;
 }
 
