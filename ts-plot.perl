@@ -81,6 +81,7 @@ if ($@) {
 
 ##-- dump buffered output
 charset('utf-8');
+binmode(\*STDOUT, ":utf8") if (utf8::is_utf8($content));
 print
   (($vars->{rawdata} ? qw() : header(%{$vars->{pfmt}{header}//{}})),
    ($content//'')
