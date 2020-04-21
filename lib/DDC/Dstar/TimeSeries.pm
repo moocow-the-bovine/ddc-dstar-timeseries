@@ -742,7 +742,7 @@ sub loadCache {
   my $buf = <$fh>;
   close $fh;
 
-  return from_json($buf, {utf8=>1});
+  return from_json($buf, {utf8=>!utf8::is_utf8($buf)});
 }
 
 ##----------------------------------------------------------------------
