@@ -1,0 +1,172 @@
+
+* big idea
+- generate dhist-cache.json at build time
+- avoid hair-loss-inducing initialization dependency (web-init -> running-server)
+
+** hic sunt dracones
+- dstar.rc, (corpus.ttk?) defaults/overrides
+  + useGenre
+  + genres
+  + textClassU
+  + textClassKey
+  + (implicit filtering-out of empty-string "genres")
+    - this happens during plotInitialize(), so empty-string "genres" may be "safe" in dhist-cache.json
+    - still probably safest to filter them out anyways (for consistency-checking)
+- meta- and mixed-corpora
+  + meta: dta, dtaxl, public, genios/regional
+  + mixed: genios/kn
+  + sneaky: genios/kn_regional (dhistdb uses "region" genres, but web $textClassU='Zeitung)
+
+** tests
+- ddc-dstar-timeseries/misc/ : check consistency
+  + <<check-dta>> dta : ok (after filtering out empty-string "genres")
+  + <<check-kn_regional>> genios/kn_regional : BAD (from db: single-genre "D-Nordwest" vs. from cache: "Zeitung")
+    - looks like 'useGenre' / 'textClassU' problem ???
+    - idea: add another filter-variable to deal with it (DHIST_CACHE_FILTER or similar)?
+
+** method possibilities
+*** <<ts-plot>> use ts-plot.perl rsp. DDC::Dstar::TimeSeries at build-time
+ - pro: uses existing TimeSeries.pm code
+ - con: needs config/web overrides
+ - con: no TimeSeries.pm support for local subcorpora (*needs running ddc_daemon*)
+ - supported overrides: all (but no back-end support)
+*** <<dhistdb>> build in build/dhistdb/ along with dhist.db
+ - pro: basic make-support already in place (DHISTDB_LOCAL_GENRE, DHISTDB_SRC_FILTER)
+ - pro: supports mixed- and meta-corpora
+ - pro: already publishes to web-dir
+ - con: must be *consistent with* config/web overrides: no immediate support for "genres"
+ - con: unsupported overrides: "genres", "useGenre=0"
+   + maybe we can live with this?
+   + no, still requires some tweaks (see [[check-kn_regional][check-kn_regional]])
+*** <<stats>> use build/stats/ with another dedicated query, auto-munge into JSON:
+ - pro: basic make-support already in place
+ - con: no config/web override support, no special varaibles
+*** <<newdir>> use new build dir (e.g. build/hist-cache/)
+ - pro: anything is possible
+ - con: nothing to work from
+
+* cache (re-)initialization commands (corpus/web)
+** commands
+#+BEGIN_SRC 
+$ make -n init-cache
+-> rm -f dhist-cache.json
+-> ./dhist-plot.perl q='@CACHEINIT' timeout=1200 f=text >/dev/null
+#+END_SRC
+
+** debug
+#+BEGIN_SRC 
+rm -f dhist-cache.json && ./dhist-plot.perl q='@CACHEINIT' timeout=1200 f=text debug=255
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotInitialize(): DDC::Dstar::TimeSeries v0.55
+dhist-plot.perl dstar: {
+   "corpus" : "pnn_test",
+   "server_host" : "127.0.0.1",
+   "semcloud_enabled" : "no",
+   "lexdb_cab_url" : "",
+   "diacollo_enabled" : "yes",
+   "www_url" : "//carrot.uni-unseen.dw/dstar/pnn_test",
+   "www_host" : "carrot.uni-unseen.dw",
+   "stringifyRoles" : 1,
+   "stringifyPeer" : 1,
+   "server_port" : "52141",
+   "www_path" : "/dstar/pnn_test",
+   "hist_enabled" : "yes",
+   "lexdb_enabled" : "yes",
+   "stringifyComments" : 1,
+   "stringifyUser" : 1,
+   "stringifyOriginal" : 1
+}
+
+dhist-plot.perl variables: {
+   "logproj" : 0,
+   "timeout" : "1200",
+   "totals" : 0,
+   "key" : "",
+   "logscale" : 0,
+   "style" : "l",
+   "slice" : "10",
+   "grid" : 0,
+   "offset" : "",
+   "wbase" : 0,
+   "debug" : "255",
+   "norm" : "abs",
+   "single" : 0,
+   "pretty" : 0,
+   "usedb" : 3,
+   "f" : "text",
+   "q" : "@CACHEINIT",
+   "window" : 0,
+   "smooth" : "none",
+   "logavg" : 0,
+   "ylabel" : "",
+   "yrange" : "0:*",
+   "query" : "@CACHEINIT",
+   "bare" : 0,
+   "title" : "",
+   "grand" : 0,
+   "prune" : 0,
+   "pformat" : "text",
+   "gaps" : 0,
+   "size" : "640,480",
+   "xrange" : "*:*",
+   "xlabel" : "date"
+}
+
+DDC::Dstar::TimeSeries [CACHEDEBUG]: cache:1970-01-01T00:00:00Z ; ripe:2020-05-25T08:36:23Z
+DDC::Dstar::TimeSeries::ensureCache(): cache update required (cache:1970-01-01T00:00:00Z < server:(unknown))
+DDC::Dstar::TimeSeries::ddcCounts(127.0.0.1:52141): count(* #sep) #by[date/1,textClass~s/:.*//]
+#:=*
+#:~dstar plot
+#:<anonymous@?
+DDC::Dstar::TimeSeries::ensureCache(): cache updated (new cache timestamp = 2020-05-25T08:36:23Z)
+DDC::Dstar::TimeSeries [CACHEDEBUG]: computed ymin=2003 , ymax=2005 (xrmin=2003 , xrmax=2005)
+DDC::Dstar::TimeSeries [CACHEDEBUG]: computed sliceby=10 ; offset=0
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotFetchCounts()
+DDC::Dstar::TimeSeries::genericCounts(): sanitized query string = `@CACHEINIT'
+DDC::Dstar::TimeSeries::genericCounts(): trying local DB [fast]
+DDC::Dstar::TimeSeries::genericCounts(): trying local DB [parsed]
+DDC::Dstar::TimeSeries::genericCounts(): fetch from local DB failed: detected non-trivial query `@CACHEINIT' at /usr/local/share/perl/5.28.1/DDC/Dstar/TimeSeries.pm line 562.
+DDC::Dstar::TimeSeries::ddcCounts(127.0.0.1:52141): count(@CACHEINIT #sep) #by[date/1,textClass~s/:.*//]
+#:=@CACHEINIT
+#:~dstar plot
+#:<anonymous@?
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotFill()
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotNormalize()
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotPrune()
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotSmooth()
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotCollect()
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotContent()
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotCleanup()
+Content-Type: text/plain; charset=utf-8
+
+0	2000	Zeitung
+DDC::Dstar::TimeSeries [CACHEDEBUG]: plotCleanup()
+#+END_SRC
+
+
+* cache (re-)initialization dataflow (perl)
+** ensureCache()
+- uses %$ts keys: qw(useGenre genres)
+- code
+  #+BEGIN_SRC 
+    #...
+    $data = $ts->ddcCounts("*");  # -> count(* #sep) #by[date/1,textClass~s/:.*//]
+
+    ##-- populate cache data
+    my $cache = {};
+    my %classes = $ts->{useGenre} && @{$ts->{genres}//[]} ? (map {($_=>undef)} @{$ts->{genres}//[]}) : qw();
+    foreach (@{$data->{counts_}}) {
+      $_->[2] //= '';
+      $_->[2] =~ s/:.*//;
+      next if (($ts->{useGenre} && $_->[2] eq '') || (%classes && !exists($classes{$_->[2]})));
+      $cache->{"$_->[1]\t$_->[2]"} += $_->[0];
+    }
+
+    ##-- store cache file
+    #...
+  #+END_SRC
+
+** ddcCounts("*")
+- uses %$ts keys: qw(useGenre textClassKey textClassU)
+- query
+  - default   : count(* #sep) #by[date/1,textClass~s/:.*//]
+  - zeitung.rc: count(* #sep) #by[date/1,@'Zeitung']
