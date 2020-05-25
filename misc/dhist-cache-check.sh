@@ -29,9 +29,16 @@ runcmd() {
 }
 
 webdir="$1"; shift
+[ -n "$QUIET" ] || echo "# CHECK $webdir" >&2
 [ -n "$webdir" ] || webdir="."
 [ -d "$webdir" ] || die "web-dir '$webdir' not found"
 [ -r "$webdir/dhist.db" ] || die "DB $webdir/dhist.db not readable"
+if [ $(basename $(readlink -f "$webdir")) = dhistdb -a \! -r "$webdir/dhist-cache.json" ] ; then
+   cdir="$(readlink -f $webdir/../..)"
+   cdir="${cdir##*dstar/}"
+   runcmd scp -p "kaskade.dwds.de:dstar/${cdir}/web/dhist-cache.json" "$webdir/dhist-cache.json" \
+     || die "failed to sync $webdir/dhist-cache.json from kaskade"
+fi
 [ -r "$webdir/dhist-cache.json" ] || die "cache $webdir/dhist-cache.json not readable"
 
 tmpdir="$1"
