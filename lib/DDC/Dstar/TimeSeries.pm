@@ -279,7 +279,7 @@ sub ddcCounts {
       $cmts .= ("#:<"
 		.($ts->{dstar}{stringifyUser} ? ($ENV{REMOTE_USER} || "anonymous") : '?')
 		.'@'
-		.($ts->{dstar}{stringifyPeer} ? ($ENV{REMOTE_HOST} || $ENV{REMOTE_ADR} || '?') : '-')
+		.($ts->{dstar}{stringifyPeer} ? ($ENV{REMOTE_HOST} || $ENV{REMOTE_ADDR} || '?') : '-')
 		."\n")
     }
     $cmts =~ s/\n+\z//;
