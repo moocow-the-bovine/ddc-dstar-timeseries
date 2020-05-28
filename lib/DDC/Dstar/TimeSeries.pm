@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.56';
+our $VERSION = '0.57';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -59,8 +59,9 @@ our $USE_DB_REGEX = 0;
 ##     ##-- dstar configuration
 ##     prog => $prog,           ##-- program name for error reporting
 ##     dstar => {               ##-- common dstar configuration options
-##      server_host => $host,   ##   - DDC server host
-##      server_port => $port,   ##   - DDC server port
+##      server_url => $url,     ##   - DDC server URL (new, requires DDC::Concordance >= v0.44)
+##      server_host => $host,   ##   - DDC server host (old, backwards-compatible)
+##      server_port => $port,   ##   - DDC server port (old, backwards-compatible)
 ##      corpus => $corpus,      ##   - DDC corpus label
 ##      hist_enabled => $bool,  ##   - histograms enabled?
 ##      ##
@@ -119,6 +120,7 @@ sub new {
 		##-- dstar options
 		prog => basename($0),
 		dstar => {
+			  #server_url  => 'inet://127.0.0.1:52000', ##-- NEW, preferred
 			  server_host => '127.0.0.1',
 			  server_port => '52000',
 			  corpus => 'corpus',
@@ -222,7 +224,9 @@ sub ensureClient {
   my $ts = shift;
   if (!$ts->{client}) {
     $ts->{client} = DDC::Client::Distributed->new(
-						  connect => {PeerAddr=>$ts->{dstar}{server_host},PeerPort=>$ts->{dstar}{server_port}},
+						  connect => ($ts->{dstar}{server_url}
+							      ? {url=>$ts->{dstar}{server_url}}
+							      : {PeerAddr=>$ts->{dstar}{server_host},PeerPort=>$ts->{dstar}{server_port}}),
 						  mode    => 'raw',
 						  start    => 0,
 						  limit    => $ts->{limit},
@@ -243,7 +247,7 @@ sub ensureClient {
 sub ddcRequest {
   my ($ts,$reqstr,%opts) = @_;
   my $client = $ts->ensureClient(%opts);
-  print STDERR __PACKAGE__, "::ddcRequest($client->{connect}{PeerAddr}:$client->{connect}{PeerPort}): $reqstr\n" if ($ts->{debug});
+  print STDERR __PACKAGE__, "::ddcRequest(".$client->addrStr."): $reqstr\n" if ($ts->{debug});
   my $rsp  = $client->queryRaw($reqstr)
     or die(__PACKAGE__, "::ddcRequest(): no response to request `$reqstr'");
   return from_json($rsp,{utf8=>(utf8::is_utf8($rsp) ? 0 : 1)});
@@ -293,7 +297,7 @@ sub ddcCounts {
               : "@\'$ts->{textClassU}'");
   my $qstr = "count($qconds #sep) #by[date/1,$gkey]".$cmts; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
   $ts->ensureClient(mode=>'json', %opts);
-  print STDERR __PACKAGE__, "::ddcCounts($ts->{client}{connect}{PeerAddr}:$ts->{client}{connect}{PeerPort}): $qstr\n" if ($ts->{debug});
+  print STDERR __PACKAGE__, "::ddcCounts(".$ts->{client}->addrStr."): $qstr\n" if ($ts->{debug});
   my $rsp  = $ts->{client}->queryRaw($qstr)
     or die(__PACKAGE__, "::ddcCounts(): no response to count-query `$qstr'");
   my $data = from_json($rsp,{utf8=>(utf8::is_utf8($rsp) ? 0 : 1)});
@@ -753,7 +757,7 @@ sub cachedebug {
   if ($ts->{debug}) {
     print STDERR __PACKAGE__, " \[CACHEDEBUG]: ", @_;
   }
-  return;
+  return 1;
 }
 
 ##----------------------------------------------------------------------
@@ -1037,7 +1041,7 @@ sub ddcRegex {
 
 
 ##==============================================================================
-## Subs: guts
+## Subs: top-level operations
 
 ##----------------------------------------------------------------------
 ## $data = $ts->plot()
@@ -1058,6 +1062,33 @@ sub plot {
   $ts->plotCleanup() if (!$ts->{keeptmp}); ##-- cleanup any stale leftovers
   return $content;
 }
+
+##----------------------------------------------------------------------
+## $bool = $ts->init()
+## $bool = $ts->init(\%vars)
+##  + re-initialize cache data
+##  + if \%vars is defined, calls parseRequest() first
+sub init {
+  my $ts = shift;
+  $ts->parseRequest(@_) if (@_);
+
+  ##-- remove old cache data
+  foreach my $fkey (qw(cacheFile gpVersionFile)) {
+    my $file = $ts->{$fkey};
+    (!$file)
+      or (!-e $file)
+      or ( $ts->cachedebug("UNLINK $file\n") && unlink($file) )
+      or die(__PACKAGE__, "::init(): failed to unlink old $fkey '$file': $!");
+  }
+
+  $ts->plotInitialize();
+  $ts->gpVersionString() if ($ts->{gpVersionFile}); ##-- ensure gpversion.txt
+
+  return $ts;
+}
+
+##==============================================================================
+## Subs: mid-level guts
 
 ##----------------------------------------------------------------------
 ## $ts = $ts->plotCleanup()
