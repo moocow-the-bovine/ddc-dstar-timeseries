@@ -27,5 +27,6 @@ WriteMakefile
 		    'Test::More'=>0,		#v1.302075
 		   },
 
-   EXE_FILES    => [],
+   EXE_FILES    => ['dstar-ts-plot.perl'],
   );
+
