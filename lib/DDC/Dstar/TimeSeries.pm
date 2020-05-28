@@ -115,64 +115,67 @@ our $USE_DB_REGEX = 0;
 ##     dbtiedr => \$tiedr,      ##-- tied(%dbhashr)
 ##    )
 sub new {
-  my $that = shift;
-  return bless({
-		##-- dstar options
-		prog => basename($0),
-		dstar => {
-			  #server_url  => 'inet://127.0.0.1:52000', ##-- NEW, preferred
-			  server_host => '127.0.0.1',
-			  server_port => '52000',
-			  corpus => 'corpus',
-			  hist_enabled => 'yes',
-			  ##
-			  stringifyComments => 1,
-			  stringifyOriginal => 1,
-			  stringifyUser => 1,
-			  stringifyPeer => 1,
-			  stringifyRoles => 1,
-			 },
-		timeout => 300,
-		limit => 16384,
+  my ($that,%args) = @_;
+  my $prog = $args{prog} || basename($0);
+  my $dir  = $args{dir} || $ENV{DSTAR_TS_ROOT} || dirname($0);
+  my $obj  = bless({
+		    ##-- dstar options
+		    prog => $prog,
+		    dir  => $dir,
+		    dstar => {
+			      #server_url  => 'inet://127.0.0.1:52000', ##-- NEW, preferred
+			      server_host => '127.0.0.1',
+			      server_port => '52000',
+			      corpus => 'corpus',
+			      hist_enabled => 'yes',
+			      ##
+			      stringifyComments => 1,
+			      stringifyOriginal => 1,
+			      stringifyUser => 1,
+			      stringifyPeer => 1,
+			      stringifyRoles => 1,
+			     },
+		    timeout => 300,
+		    limit => 16384,
 
-		##-- plot parameters
-		ymin => undef,
-		ymax => undef,
+		    ##-- plot parameters
+		    ymin => undef,
+		    ymax => undef,
 
-		##-- DB_File options
-		useDB => $USE_DB_ANY,
-		useDBPrefix => $USE_DB_PREFIX,
-		useDBSuffix => $USE_DB_SUFFIX,
-		useDBRegex => $USE_DB_REGEX,
-		createSuffixDB => $CREATE_SUFFIX_DB,
-		dbFile => (dirname($0)."/dhist.db"),
-		dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
-		dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'},
+		    ##-- DB_File options
+		    useDB => $USE_DB_ANY,
+		    useDBPrefix => $USE_DB_PREFIX,
+		    useDBSuffix => $USE_DB_SUFFIX,
+		    useDBRegex => $USE_DB_REGEX,
+		    createSuffixDB => $CREATE_SUFFIX_DB,
+		    dbFile => "$dir/dhist.db",
+		    dbIndices => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma'},
+		    dbExpand  => {Lemma=>'Lemma', l=>'Lemma', ''=>'Lemma', 'www'=>'www', 'web'=>'www', 'webLemma'=>'www'},
 
-		##-- low-level options
-		debug => 0,
-		keeptmp => 0,
-		useGenre => 1,
-		cacheFile => (dirname($0)."/dhist-cache.json"),
-		cacheMinAge => undef,
-		cacheUseInfo => 0,
-		textClassKey => 'textClass',
-                textClassTweak => '~s/:.*//',
-		textClassU => 'Gesamt',
-		xBarClass => '__XBARS__',
+		    ##-- low-level options
+		    debug => 0,
+		    keeptmp => 0,
+		    useGenre => 1,
+		    cacheFile => "$dir/dhist-cache.json",
+		    cacheMinAge => undef,
+		    cacheUseInfo => 0,
+		    textClassKey => 'textClass',
+		    textClassTweak => '~s/:.*//',
+		    textClassU => 'Gesamt',
+		    xBarClass => '__XBARS__',
 
-		##-- guts
-		genres => [],
-		client => undef,
-		cache => undef,
-		gpVersion => undef,
-		gpVersionFile => (dirname($0)."/gpversion.txt"),
-		gpVersionTTL => (60*60*24),
+		    ##-- guts
+		    genres => [],
+		    client => undef,
+		    cache => undef,
+		    gpVersion => undef,
+		    gpVersionFile => "$dir/gpversion.txt",
+		    gpVersionTTL => (60*60*24),
 
-		##-- user args
-		@_
-	       },
-	       ref($that)||$that);
+		    ##-- user args
+		    %args,
+		   },
+		   ref($that)||$that);
 }
 
 ##----------------------------------------------------------------------
