@@ -29,6 +29,7 @@ our ($help);
 our %opts = (
 	     gpVersionFile=>undef, ##-- don't cache gpversion.txt
 	    );
+our %xopts = qw();
 our $outfile = '-';
 our $initOnly = 0;
 GetOptions(
@@ -37,6 +38,7 @@ GetOptions(
 	   'i|initialize|init-cache|initialize-cache!' => \$initOnly,
 	   'o|out|output=s' => \$outfile,
 	   'O|option|opt=s' => \%opts,
+	   'X|dstar|dstar-option|xoption|xopt=s' => \%xopts,
 	   'D|debug!' => sub { $opts{debug}=($_[1] ? 255 : 0) },
 	  );
 if ($help) {
@@ -45,12 +47,13 @@ if ($help) {
 Usage: $0 [OPTIONS] CGI_VARS...
 
 Options:
-  -h, -help        # this help message
-  -d, -dir DIR     # base directory (default=\$ENV{DSTAR_TS_ROOT} || .)
-  -o, -out OUTFILE # output file (default=-: stdout)
-  -i, -initialize  # don't plot, just initialize cacheFile
-  -O, -opt OPT=VAL # set DDC::Dstar::TimeSeries option (override dstar.rc, local.rc)
-  -D, -debug       # enable debugging (like -O=debug=255)
+  -h, -help          # this help message
+  -d, -dir DIR       # base directory (default=\$ENV{DSTAR_TS_ROOT} || .)
+  -o, -out OUTFILE   # output file (default=-: stdout)
+  -i, -initialize    # don't plot, just initialize cacheFile
+  -D, -debug         # enable debugging (like -O=debug=255)
+  -O, -opt OPT=VAL   # set DDC::Dstar::TimeSeries option (override dstar.rc, local.rc)
+  -X, -dstar OPT=VAL # set 'dstar' option (override dstar.rc, local.rc)
 
 Files:
   DIR/dstar.rc     # dstar configuration (perl code)
@@ -86,6 +89,7 @@ if (-r "$progdir/dstar.rc") {
 
 ##-- command-line options override dstar.rc
 @$ts{keys %opts} = values %opts;
+@{$ts->{dstar}}{keys %xopts} = values %xopts;
 
 ##------------------------------------------------------------------------------
 ## MAIN
@@ -106,6 +110,7 @@ if (-r "$progdir/local.rc") {
 
 ##-- command-line options override local.rc too
 @$ts{keys %opts} = values %opts;
+@{$ts->{dstar}}{keys %xopts} = values %xopts;
 
 ##-- just initialize?
 if ($initOnly) {
