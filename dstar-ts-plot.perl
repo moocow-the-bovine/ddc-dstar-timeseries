@@ -63,7 +63,8 @@ EOF
 ##==============================================================
 ## MAIN
 
-our $ts = DDC::Dstar::TimeSeries->new(prog=>$prog, %opts);
+$opts{dir} ||= $progdir;
+our $ts      = DDC::Dstar::TimeSeries->new(prog=>$prog, %opts);
 
 ##-- BEGIN dstar config
 if (-r "$progdir/dstar.rc") {
