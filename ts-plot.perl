@@ -21,7 +21,7 @@ BEGIN {
 
 our $debug   = 0;
 our $prog    = basename($0);
-our $progdir = dirname($0);
+our $progdir = $ENV{DSTAR_TS_ROOT} || dirname($0);
 
 our $ts = DDC::Dstar::TimeSeries->new(prog=>$prog, debug=>$debug);
 
