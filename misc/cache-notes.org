@@ -57,13 +57,16 @@
     - dtaxl
     - dta+dwds
     - public
+- other idea: use new make-variable WEB_CACHE_VOLATILE
+  + set to non-empty and non-"no" to enable handling by 'webcache-update-auto'
+    (we'd still call 'make -C CORPUS/web/update-cache-auto', but could make it a no-op target)
 
 *** DONE enable BUILDHOST dhist-cache.json generation & publication by default
     CLOSED: [2020-05-29 Fri 10:26]
 
-*** TODO adapt corpus/web/Makefile =init-cache= and =update-cache= to use dstar-ts-plot.perl ?
+*** DONE adapt corpus/web/Makefile =init-cache= and =update-cache= to use dstar-ts-plot.perl ?
+    CLOSED: [2020-05-29 Fri 11:33]
 - requires removing / option-alization of force-unlink code in TimeSeries.pm
-
 
 ** manual tests (old)
 - ddc-dstar-timeseries/misc/ : check consistency
