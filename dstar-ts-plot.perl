@@ -27,6 +27,7 @@ our $progdir = $ENV{DSTAR_TS_ROOT} || '.';
 ## Command-line
 our ($help);
 our %opts = (
+	     force => 0, ##-- for init()
 	     gpVersionFile=>undef, ##-- don't cache gpversion.txt
 	    );
 our %xopts = qw();
@@ -36,6 +37,7 @@ GetOptions(
 	   'h|help' => \$help,
 	   'd|dir|directory=s' => \$progdir,
 	   'i|initialize|init-cache|initialize-cache!' => \$initOnly,
+	   'f|force!' => \$opts{force},
 	   'o|out|output=s' => \$outfile,
 	   'O|option|opt=s' => \%opts,
 	   'X|dstar|dstar-option|xoption|xopt=s' => \%xopts,
@@ -50,7 +52,8 @@ Options:
   -h, -help          # this help message
   -d, -dir DIR       # base directory (default=\$ENV{DSTAR_TS_ROOT} || .)
   -o, -out OUTFILE   # output file (default=-: stdout)
-  -i, -initialize    # don't plot, just initialize cacheFile
+  -i, -initialize    # don't plot, just initialize cacheFile and gpVersionFile
+  -f, -force         # do/don't force re-initialization (default=don't)
   -D, -debug         # enable debugging (like -O=debug=255)
   -O, -opt OPT=VAL   # set DDC::Dstar::TimeSeries option (override dstar.rc, local.rc)
   -X, -dstar OPT=VAL # set 'dstar' option (override dstar.rc, local.rc)

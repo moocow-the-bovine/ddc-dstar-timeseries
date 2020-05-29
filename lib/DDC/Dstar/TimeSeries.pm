@@ -1071,17 +1071,22 @@ sub plot {
 ## $bool = $ts->init(\%vars)
 ##  + re-initialize cache data
 ##  + if \%vars is defined, calls parseRequest() first
+##  + accepts additional vars:
+##     force => $bool,   ##-- if true, force-unlinks old cache file(s) first
 sub init {
   my $ts = shift;
   $ts->parseRequest(@_) if (@_);
 
   ##-- remove old cache data
-  foreach my $fkey (qw(cacheFile gpVersionFile)) {
-    my $file = $ts->{$fkey};
-    (!$file)
-      or (!-e $file)
-      or ( $ts->cachedebug("UNLINK $file\n") && unlink($file) )
-      or die(__PACKAGE__, "::init(): failed to unlink old $fkey '$file': $!");
+  if ($ts->{vars}{force}) {
+    $ts->cachedebug("forcing (re-)initialization\n");
+    foreach my $fkey (qw(cacheFile gpVersionFile)) {
+      my $file = $ts->{$fkey};
+      (!$file)
+	or (!-e $file)
+	  or ( $ts->cachedebug("UNLINK $file\n") && unlink($file) )
+	    or die(__PACKAGE__, "::init(): failed to unlink old $fkey '$file': $!");
+    }
   }
 
   $ts->plotInitialize();
