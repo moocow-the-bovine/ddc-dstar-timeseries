@@ -1,3 +1,8 @@
+##-*- Mode: Org; coding: utf-8; -*-
+#+STARTUP: showall
+#+STARTUP: logdone
+#-STARTUP: lognotedone
+#+STARTUP: hideblocks
 
 * big idea
 - generate dhist-cache.json at build time
@@ -17,7 +22,50 @@
   + mixed: genios/kn
   + sneaky: genios/kn_regional (dhistdb uses "region" genres, but web $textClassU='Zeitung)
 
-** tests
+** implementation
+
+*** [[dhistdb]] : status quo 2020-05-29
+- wrote dstar/bin/dstar-ddc-run.perl: convenience script for "ephemeral" ddc_daemons
+  + plays together nicely with dstar build directories
+  + uses (temporary) $RML from "skeleton" (by default dstar/rml.d/rml/)
+  + uses (temporary) UNIX sockets for server communication
+  + basic resolution support for mixed- and meta-corpora using `make -C $BUILD_ROOT config | grep ^SERVER_DTRS=`
+    - TODO: yet another use case for (envisioned/hypothetical) dstar 'registry'
+- updated DDC::Dstar::TimeSeries.pm (v0.57)
+  + added {server_url} support
+  + added init() method to force cache re-initialization
+  + added installable (non-CGI) command-line utility dstar-ts-plot.perl
+- fixed {connect=>$url} support for DDC::Client (DDC::Concordance v0.46)
+- added [[dhistdb]] rules (dhist-cache.json, cache-init) for generating, installing, & publishing dhist-cache.json
+  + *not yet active* by default
+- added [[dhistdb]] rules for checking local vs. web cache-consistency (cache-check)
+  + looks ok for dtak, dta, dta+dwds, public, zeitungen, genios/kn_regional, genios/kn, genios/regional
+
+*** DONE disable or slow down =webcache-update-kaskade= jenkins/cron job
+    CLOSED: [2020-05-29 Fri 10:06]
+- *WONTFIX*: currently runs 1x/day for 1m13s (<0.1%) --> not a big problem
+- if this gets too painful, we could override the 'corpora' variable
+  to include only rarely-updated, volatile corpora which might need update
+  + candidates here:
+    - bz_meta
+    - zeitungen
+    - zeitungenxl
+    - uflexic?
+    - ...
+  + NON-candidates (because auto-updated)
+    - dta
+    - dtaxl
+    - dta+dwds
+    - public
+
+*** DONE enable BUILDHOST dhist-cache.json generation & publication by default
+    CLOSED: [2020-05-29 Fri 10:26]
+
+*** TODO adapt corpus/web/Makefile =init-cache= and =update-cache= to use dstar-ts-plot.perl ?
+- requires removing / option-alization of force-unlink code in TimeSeries.pm
+
+
+** manual tests (old)
 - ddc-dstar-timeseries/misc/ : check consistency
   + <<check-dta>> dta : ok (after filtering out empty-string "genres")
   + <<check-kn_regional>> genios/kn_regional : BAD (from db: single-genre "D-Nordwest" vs. from cache: "Zeitung")
@@ -30,7 +78,7 @@
  - con: needs config/web overrides
  - con: no TimeSeries.pm support for local subcorpora (*needs running ddc_daemon*)
  - supported overrides: all (but no back-end support)
-*** <<dhistdb>> build in build/dhistdb/ along with dhist.db
+*** *THIS* <<dhistdb>> build in build/dhistdb/ along with dhist.db
  - pro: basic make-support already in place (DHISTDB_LOCAL_GENRE, DHISTDB_SRC_FILTER)
  - pro: supports mixed- and meta-corpora
  - pro: already publishes to web-dir
@@ -45,15 +93,17 @@
  - pro: anything is possible
  - con: nothing to work from
 
-* cache (re-)initialization commands (corpus/web)
-** commands
+* wallowing in the data
+
+** cache (re-)initialization commands (corpus/web)
+*** commands
 #+BEGIN_SRC 
 $ make -n init-cache
 -> rm -f dhist-cache.json
 -> ./dhist-plot.perl q='@CACHEINIT' timeout=1200 f=text >/dev/null
 #+END_SRC
 
-** debug
+*** debug
 #+BEGIN_SRC 
 rm -f dhist-cache.json && ./dhist-plot.perl q='@CACHEINIT' timeout=1200 f=text debug=255
 DDC::Dstar::TimeSeries [CACHEDEBUG]: plotInitialize(): DDC::Dstar::TimeSeries v0.55
@@ -143,8 +193,8 @@ DDC::Dstar::TimeSeries [CACHEDEBUG]: plotCleanup()
 #+END_SRC
 
 
-* cache (re-)initialization dataflow (perl)
-** ensureCache()
+** cache (re-)initialization dataflow (perl)
+*** ensureCache()
 - uses %$ts keys: qw(useGenre genres)
 - code
   #+BEGIN_SRC 
@@ -165,7 +215,7 @@ DDC::Dstar::TimeSeries [CACHEDEBUG]: plotCleanup()
     #...
   #+END_SRC
 
-** ddcCounts("*")
+*** ddcCounts("*")
 - uses %$ts keys: qw(useGenre textClassKey textClassU)
 - query
   - default   : count(* #sep) #by[date/1,textClass~s/:.*//]
