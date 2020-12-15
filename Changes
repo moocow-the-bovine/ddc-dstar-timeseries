@@ -1,0 +1,101 @@
+##-*- Mode: Change-Log; coding: utf-8; -*-
+##
+## Change log for perl distribution DDC::Dstar::TimeSeries
+
+v0.57 2020-05-29  moocow
+	* TimeSeries.pm: added 'force' option to init() method, added -force option for dstar-ts-plot.perl
+	* force-init stuff
+
+v0.57 2020-05-28  moocow
+	* dstar-ts-plot.perl fix for 'dstar' options
+	* TimeSeries.pm, dstar-ts-plot.perl fix for alternate runtime directory 'dir'
+	* install dstar-ts-plot.perl via EXE_FILES
+	* ts-plot.perl: added support for ENV{DSTAR_TS_ROOT}
+	* added dstar-ts-plot.perl installable command-line utility without too much CGI cruft
+	* added {server_url} support and init() method for re-initialization
+
+v0.56 2020-05-26  moocow
+	* typo fix
+
+v0.56 2020-05-25  moocow
+	* more fixes for UTF-8 histogram bin keys (loadCache)
+	* more fixes for UTF-8 histogram bin keys
+	  * added textClassTweak key (default '~s/:.*//' should be backwards-compatible)
+	  * TODO: merge textClassKey and textClassTweak
+	* stale checkin of web/dhist-plot.perl from 'regional' corpus: support UTF-8 in histogram bin keys
+	  (e.g. 'region')
+
+v0.55 2019-12-13  moocow
+	* more utf8-related  for ts-plot.perl
+	* fixes for 'real' utf8 genres in dbCounts
+
+v0.53 2019-11-22  moocow
+	* added  query sanitization regexes (vacuous #ASC_DATE etc)
+	* added additional query sanitization regexes (vacuous #ASC_DATE etc)
+
+v0.52 2019-08-14  moocow
+	* fix some warnings about undefined $kclass
+
+v0.51 2019-03-04  moocow
+	* fixes for init-cache with useGenre=0 and non-empty {genres}: emit warning if inconsistent
+
+v0.50 2019-02-28  moocow
+	* svntag.rc fix
+	* add DWDS::DDC::Query.pm-style comments for DDC::Dstar::TimeSeries
+
+v0.49 2018-12-13  moocow
+	* fixed doubled counts from ts-plot.perl with grand=1
+
+v0.48 2018-10-16  moocow
+	* removed debugging code
+	* DDC::Dstar::TimeSeries v0.48: added query sanitization for explicit #SEPARATE in input query
+	  - explicit #SEPARATE was preventing db-lookup
+
+v0.47 2018-08-30  moocow
+	* updates for ddc-v2.1.16-style lexer-comments
+
+v0.46 2018-07-03  moocow
+	* suffix-db creation: reverse logical characters
+	  (keep UTF-8 bytes for a single logical character in correct order)
+	* cachedebug message fixes
+	* added optimizations for prefix-queries via local DB
+	  + added optimized lookup for suffix-queries via local suffix-DB
+	    - suffix-DB can be auto-created if 'createSuffixDB' is set to true (very slow, mostly useful for plotcache)
+
+v0.45 2018-07-02  moocow
+	* added support for regex-queries via DB (very slow, only useful for offline computation)
+
+v0.44 2018-06-28  moocow
+	* dstar/web/*.perl: use temporary local variables for $@
+
+v0.44 2018-04-19  moocow
+	* set defaultuseDB=$USE_DB_ANY
+
+v0.43 2018-03-20  moocow
+	* time series defaultExpand: allow webLemma aliases
+	* better ddc un-escaping for fast-DB heuristics
+	  * better corpus-dependent parameterization of db-expanders (dbExpand)
+	  * e.g. for public, dta+dwds without common 'Lemma' chain
+
+v0.42 2018-03-15  moocow
+	* use www expansion chain by default
+	* TimeSeries.pm: use default expansion chain 'www'
+	* fixed plotFill() bug causing gaps not to be filled with single=1
+
+v0.40 2018-03-05  moocow
+	* better temp-file cleanup
+
+v0.39 2018-02-15  moocow
+	* better fast-DB heuristics
+	* useDB heuristics (1:parsed, 2:fast)
+
+v0.39 2018-02-14  moocow
+	* added support for dhist.db if present
+	* more verbose print-debugging
+
+v0.38 2018-02-13  moocow
+	* ddcRequest fix (non-method call)
+	* fixed ensureCache() non-method-call bug
+	* dstar-ddc-timeseries: setup svntag stuff
+	* ddc-dstar-timeseries: re-factorization of dhist-plot.perl
+	* creating project ddc-dstar-timeseries (re-factorization of dstar/corpus/web/dhist-plot.perl)
