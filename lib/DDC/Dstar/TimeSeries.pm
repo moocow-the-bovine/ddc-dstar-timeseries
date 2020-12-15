@@ -1574,7 +1574,7 @@ sub plotContent {
     my $set_output='';
     my $termopts = $vars->{termopts} // '';
     $termopts   .= " dashed" if ($bare && !$gpv5); ##-- termoption "dashed" only works in gnuplot < 5.0
-    $termopts   .= " noenhanced" if ($gpv5 && $termopts !~ /\benhanced\b/); ##-- disable "enhanced text mode"
+    $termopts   .= " noenhanced" if ($gpv5 && $termopts !~ /\benhanced\b/); ##-- disable "enhanced text mode" (gnuplot >= 5.0)
     if ($ts->{debug} || $pfmt->{label} ne 'gnuplot') {
       my ($tmpfh,$tmpfile) = File::Temp::tempfile("dhist_XXXXX", DIR=>"/tmp", SUFFIX=>".$pfmt->{label}");
       close $tmpfh;
