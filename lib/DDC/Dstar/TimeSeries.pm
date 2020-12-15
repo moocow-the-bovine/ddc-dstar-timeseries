@@ -26,7 +26,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.57';
+our $VERSION = '0.58';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -1574,6 +1574,7 @@ sub plotContent {
     my $set_output='';
     my $termopts = $vars->{termopts} // '';
     $termopts   .= " dashed" if ($bare && !$gpv5); ##-- termoption "dashed" only works in gnuplot < 5.0
+    $termopts   .= " noenhanced" if ($gpv5 && $termopts !~ /\benhanced\b/); ##-- disable "enhanced text mode"
     if ($ts->{debug} || $pfmt->{label} ne 'gnuplot') {
       my ($tmpfh,$tmpfile) = File::Temp::tempfile("dhist_XXXXX", DIR=>"/tmp", SUFFIX=>".$pfmt->{label}");
       close $tmpfh;
