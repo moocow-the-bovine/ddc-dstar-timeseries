@@ -96,6 +96,7 @@ our $USE_DB_REGEX = 0;
 ##     cacheFile => $file,      ##-- JSON file to load/store cache (undef=always update)
 ##     cacheMinAge => $secs,    ##-- minimum cache age for auto-update (in seconds, e.g. 60*60*24*7 ~ 1 week; undef=no minimum)
 ##     cacheUseInfo => $bool,   ##-- use slower but more reliable server 'info' request to get server timestamp? (default=0)
+##     cacheUnit => $unit,      ##-- unit of current cache file qw(y m d); default=y
 ##     textClassKey => $key,    ##-- ddc-indexed textClass meta-attribute (should be merged with 'textClassTweak')
 ##     textClassTweak => $suff, ##-- ddc textClass meta-attribute count-by suffix ('~s/:.*//')
 ##     textClassU => $uclass,   ##-- "universal" genre for single-plot or grand-average mode
@@ -114,6 +115,25 @@ our $USE_DB_REGEX = 0;
 ##     dbhashr => \%dbhashr,    ##-- tied hash (reversed lemmata, for suffix queries)
 ##     dbtiedr => \$tiedr,      ##-- tied(%dbhashr)
 ##    )
+## + %vars
+##   (
+##    ##-- user parameters
+##    ## see %defaults
+##    ##
+##    ##-- intermediate data (from plotInitialize())
+##    sliceby => $sliceby,      ##-- numeric slice+0
+##    pfmt => $pfmt,            ##-- convenience alias for $pformats{$vars{pformat}}
+##    xr(min|max) => $xrminmax, ##-- parsed $vars{xrange} limits or ''
+##    xu(min|max) => $xuminmax, ##-- parsed user $vars{xrange} limits or '*'
+##    y(min|max) => $yminmax,   ##-- (min|max)-year, from rc-file or user request
+##    classes => \@classes,     ##-- all genres for this query
+##    dc2f => \%dc2f,           ##-- scaling constants (date+class): "$date\t$class"=>$f
+##    c2f => \%c2f,             ##-- scaling constants (class): "$class"=>$f
+##    d2f => \%d2f              ##-- scaling constants (date): "$date"=>$f
+##    f_corpus => $f_corpus,    ##-- scaling constants (corpus): $f
+##    slices => \@slices,       ##-- all slices for this query (honors $vars{gaps} request)
+##    sliceof => \&sliceof,     ##-- $slice = sliceof($date)
+##   )
 sub new {
   my ($that,%args) = @_;
   my $prog = $args{prog} || basename($0);
@@ -159,6 +179,7 @@ sub new {
 		    cacheFile => "$dir/dhist-cache.json",
 		    cacheMinAge => undef,
 		    cacheUseInfo => 0,
+		    cacheUnit => 'y',
 		    textClassKey => 'textClass',
 		    textClassTweak => '~s/:.*//',
 		    textClassU => 'Gesamt',
@@ -298,7 +319,18 @@ sub ddcCounts {
   my $gkey = ($ts->{useGenre} && $ts->{textClassKey}
               ? ($ts->{textClassKey}.($ts->{textClassTweak}||''))
               : "@\'$ts->{textClassU}'");
-  my $qstr = "count($qconds #sep) #by[date/1,$gkey]".$cmts; #"count($qconds #sep $gconds) #by[date/1,$gkey]";
+
+  my $dunit = $ts->{vars}{unit}||'y';
+  my ($dexpr);
+  if ($dunit eq 'm') {
+    $dexpr = 'date~s/^([+-]?[0-9]+)(\-[0-9]{1,2})?.*/$1$2/';
+  } elsif ($dunit eq 'd') {
+    $dexpr = 'date';
+  } else { #if ($dunit eq 'y')
+    $dexpr = 'date/1';
+  }
+
+  my $qstr = "count($qconds #sep) #by[$dexpr,$gkey]".$cmts; #"count($qconds #sep $gconds) #by[$dexpr,$gkey]";
   $ts->ensureClient(mode=>'json', %opts);
   print STDERR __PACKAGE__, "::ddcCounts(".$ts->{client}->addrStr."): $qstr\n" if ($ts->{debug});
   my $rsp  = $ts->{client}->queryRaw($qstr)
@@ -767,8 +799,12 @@ sub cachedebug {
 ## \%cache = $ts->ensureCache()
 sub ensureCache {
   my $ts = shift;
-  return $ts->{cache} if (defined($ts->{cache}));
-  my $cachefile = $ts->{cacheFile};
+  my $unit = $ts->{vars}{unit} || 'y';
+  return $ts->{cache} if (defined($ts->{cache}) && ($ts->{cacheUnit}||'y') eq $unit);
+
+  my $cachefile  = $ts->{cacheFile};
+  $cachefile .= "_$unit" if ($unit ne 'y');
+
   my $cache_stamp      = $ts->fileTimestamp($cachefile);
   my $cache_ripe_stamp = $ts->timestamp(time() - ($ts->{cacheMinAge}//0));
   my ($server_stamp);
@@ -802,6 +838,7 @@ sub ensureCache {
     }
 
     ##-- store cache file
+        $ts->cachedebug("saving cache-file $cachefile\n");
     if (!saveCache($cache,$cachefile)) {
       warn(__PACKAGE__, "::ensureCache(): failed to store cache to $cachefile: $!");
     } else {
@@ -827,8 +864,9 @@ sub ensureCache {
 my %defaults =
   (
    query=>'',		##-- target query (aka "lemma")
-   slice=>'10',		##-- slice width (years) or (years+offset)
+   slice=>'10',		##-- slice width (years), (years+offset); general: (UNITS(+OFFSET)?UNIT?), UNIT={y,m,d}
    offset=>'',		##-- slice offset (empty uses xrange)
+   unit=>'',            ##-- slice unit (y:years:default, m:months, d:days)
    norm=>'abs',		##-- normalization mode
    logproj=>0,		##-- do log-linear projection?
    logavg=>0,		##-- do log-linear smoothing?
@@ -869,6 +907,7 @@ my %aliases =
   (
    query=>[qw(query qu q lemma lem l)],
    slice=>[qw(sliceby slice sl s)],
+   unit=>[qw(unit u)],
    offset=>[qw(offset off)],
    norm=>[qw(normalize norm n)],
    logproj=>[qw(logproject logp lp)],
@@ -1134,8 +1173,8 @@ sub plotInitialize {
   ##-- dump vars (debug)
   # v-- errors "Thread 1 terminated abnormally: hash- or arrayref expected (not a simple scalar, use allow_nonref to allow this) at /usr/share/perl5/JSON.pm line 154."
   #     when running under forks.pm
-  print STDERR "$ts->{prog} dstar: ", JSON::to_json($ts->{dstar},{utf8=>0,pretty=>1}), "\n" if ($ts->{debug});
-  print STDERR "$ts->{prog} variables: ", JSON::to_json($vars,{utf8=>0,pretty=>1}), "\n" if ($ts->{debug});
+  print STDERR "$ts->{prog} dstar: ", JSON::to_json($ts->{dstar},{utf8=>0,pretty=>1,canonical=>1}), "\n" if ($ts->{debug});
+  print STDERR "$ts->{prog} variables: ", JSON::to_json($vars,{utf8=>0,pretty=>1,canonical=>1}), "\n" if ($ts->{debug});
 
   ##-- variable-dependent conveniences
   $vars->{sliceby} = do { no warnings 'numeric'; ($vars->{slice}+0); };
@@ -1143,6 +1182,16 @@ sub plotInitialize {
   $vars->{smooth}  = ($vars->{smooth} =~ /^(?:no?(?:ne)?)?$/ ? '' : $vars->{smooth});
   $vars->{pfmt}    = $pformats{$vars->{pformat}//''};
   die(__PACKAGE__, "::plotInitialize(): unknown plot-format '$vars->{pformat}'") if (!defined($vars->{pfmt}));
+
+  ##-- parse slice, offset, unit
+  if ($vars->{slice} =~ m{^\s*([+-]?[0-9]+)(\s*[\s+-]\s*[0-9]+)?(\s*[ymd]?)}i) {
+    $vars->{sliceby} = $1;
+    $vars->{offset}  = $2 if (($vars->{offset}//'') eq '');
+    $vars->{unit}    = lc($3) if (($vars->{unit}//'') eq '');
+  }
+  ##-- sanity check slice unit
+  $vars->{unit} ||= 'y';
+  die("unknown slice unit '$vars->{unit}' must be one of {y,m,d}") if ($vars->{unit} !~ /^[ymd]$/);
 
   ##-- range variables
   my ($xrmin,$xrmax) = map {$_//''} split(/:/, ($vars->{xrange}||'*:*'), 2);
@@ -1153,11 +1202,11 @@ sub plotInitialize {
     $ymax //= $xrmax;
     if (($ymin//'') =~ /^\*?$/) {
       $ts->ensureCache();
-      $ymin = (sort {$a<=>$b} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
+      $ymin = (sort {$a cmp $b} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
     }
     if (($ymax//'') =~ /^\*?$/) {
       $ts->ensureCache();
-      $ymax = (sort {$b<=>$a} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
+      $ymax = (sort {$b cmp $a} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
     }
   }
   $xrmin=$ymin if ($xumin eq '*');
@@ -1165,15 +1214,9 @@ sub plotInitialize {
   $ts->cachedebug("computed ymin=$ymin , ymax=$ymax (xrmin=$xrmin , xrmax=$xrmax)\n");
   @$vars{qw(xrmin xrmax xumin xumax ymin ymax)} = ($xrmin,$xrmax, $xumin,$xumax, $ymin,$ymax);
 
-  ##-- parse slice, offset
-  if ($vars->{slice} =~ m{^\s*([+-]?[0-9]+)\s*([\s+-]\s*[0-9]+)\s*}) {
-    $vars->{sliceby} = $1;
-    $vars->{offset}  = $2 if (($vars->{offset}//'') eq '');
-  }
-
   ##-- guess default offset if user specified non-trivial range
   $vars->{offset} ||= $xumin ne '*' ? ($xumin % $vars->{sliceby}) : 0;
-  $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset}\n");
+  $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset} ; unit=$vars->{unit}\n");
 
   ##-- genre variables
   warn(__PACKAGE__, "::plotInitialize(): WARNING: {useGenre} is false, but {genres} is neither empty nor the singleton {textClassU}: expect weirdness")
@@ -1185,9 +1228,16 @@ sub plotInitialize {
   }
   $vars->{grand} ||= !@{$ts->{genres}};
 
-  ##-- smoothing constants (from cache)
+  ##-- scaling constants (from cache)
   my ($sliceby,$offset) = @$vars{qw(sliceby offset)};
-  my $sliceof = $vars->{sliceof} = sub { $sliceby==0 ? 0 : int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
+  my ($sliceof);
+  if ($sliceby == 0) {
+    $sliceof = sub { 0 };
+  }
+  else { #if ($vars->{unit} eq 'y')
+    $sliceof = sub { int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
+  }
+  $vars->{sliceof} = $sliceof;
 
   my @classes = (@{$ts->{genres}} && $ts->{textClassKey} ? (grep {($_//'') ne ''} map {split(/[,\t]+/,$_)} @{$ts->{genres}}) : $ts->{textClassU});
   my %dc2f = qw();
