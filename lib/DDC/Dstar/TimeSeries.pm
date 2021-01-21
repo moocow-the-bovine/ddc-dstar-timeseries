@@ -1235,7 +1235,7 @@ sub plotInitialize {
   if ($unit ne 'y') {
     #die(__PACKAGE__, "::plotInitialize(): can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
     require Date::Calc;
-    require Date::Parse;
+    #require Date::Parse;
   }
 
   ##-- range variables
