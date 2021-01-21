@@ -819,7 +819,7 @@ sub ensureCache {
   my $cache_ripe_stamp = $ts->timestamp(time() - ($ts->{cacheMinAge}//0));
   my ($server_stamp);
 
-  $ts->cachedebug("cache:$cache_stamp ; ripe:$cache_ripe_stamp\n");
+  $ts->cachedebug("cache:$cache_stamp ; ripe:$cache_ripe_stamp ; unit=$unit\n");
 
   if ( -r $cachefile && !-w $cachefile ) {
     ##-- read-only cache file: just load it
@@ -848,20 +848,24 @@ sub ensureCache {
     }
 
     ##-- store cache file
-        $ts->cachedebug("saving cache-file $cachefile\n");
+    $ts->cachedebug("saving cache-file $cachefile\n");
     if (!saveCache($cache,$cachefile)) {
       warn(__PACKAGE__, "::ensureCache(): failed to store cache to $cachefile: $!");
     } else {
       print STDERR __PACKAGE__, "::ensureCache(): cache updated (new cache timestamp = ", $ts->fileTimestamp($cachefile), ")\n";
     }
+
+    ##-- return
+    $ts->{cacheUnit} = $unit;
     return $ts->{cache} = $cache;
   }
 
-  if (!$ts->{cache}) {
+  if (!$ts->{cache} || ($ts->{cacheUnit}//'y') ne $unit) {
     ##-- just load cache-file
-    $ts->cachedebug("re-loading cache data (cache~$cache_stamp ; server~".($server_stamp//'undef').")\n");
+    $ts->cachedebug("re-loading cache data (cache~$cache_stamp ; server~".($server_stamp//'undef')." ; unit=$unit)\n");
     $ts->{cache} = $ts->loadCache($cachefile)
       or die(__PACKAGE__, "::ensureCache(): failed to retrieve cache data from $cachefile: $!");
+    $ts->{cacheUnit} = $unit;
   }
   return $ts->{cache};
 }
@@ -874,9 +878,9 @@ sub ensureCache {
 my %defaults =
   (
    query=>'',		##-- target query (aka "lemma")
-   slice=>'10',		##-- slice width (years), (years+offset); general: (UNITS(+OFFSET)?UNIT?), UNIT={y,m,d}
-   offset=>'',		##-- slice offset (empty uses xrange)
    unit=>'',            ##-- slice unit (y:years:default, m:months, d:days)
+   slice=>'10',		##-- slice width (UNITs), (UNITs+offset); general: (UNITS(+OFFSET)?UNIT?), UNIT={y,m,d}
+   offset=>'',		##-- slice offset (empty uses xrange)
    norm=>'abs',		##-- normalization mode
    logproj=>0,		##-- do log-linear projection?
    logavg=>0,		##-- do log-linear smoothing?
@@ -1223,12 +1227,13 @@ sub plotInitialize {
     $vars->{offset}  = $2 if (($vars->{offset}//'') eq '');
     $vars->{unit}    = lc($3) if (($vars->{unit}//'') eq '');
   }
-  ##-- sanity check slice unit
+  ##-- sanity checks: slice unit
+  $vars->{unit} = 'y' if ($vars->{sliceby}==0);
   $vars->{unit} ||= 'y';
   my $unit = $vars->{unit};
   die("unknown slice unit '$unit' must be one of {y,m,d}") if ($unit !~ /^[ymd]$/);
   if ($unit ne 'y') {
-    die(__PACKAGE__, "::plotInitialize(): can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
+    #die(__PACKAGE__, "::plotInitialize(): can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
     require Date::Calc;
     require Date::Parse;
   }
@@ -1254,10 +1259,6 @@ sub plotInitialize {
   $ts->cachedebug("computed ymin=$ymin , ymax=$ymax (xrmin=$xrmin , xrmax=$xrmax)\n");
   @$vars{qw(xrmin xrmax xumin xumax ymin ymax)} = ($xrmin,$xrmax, $xumin,$xumax, $ymin,$ymax);
 
-  ##-- guess default offset if user specified non-trivial range
-  $vars->{offset} ||= $unit eq 'y' && $xumin ne '*' && $vars->{sliceby} ? ($xumin % $vars->{sliceby}) : 0;
-  $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset} ; unit=$vars->{unit}\n");
-
   ##-- genre variables
   warn(__PACKAGE__, "::plotInitialize(): WARNING: {useGenre} is false, but {genres} is neither empty nor the singleton {textClassU}: expect weirdness")
     if (!$ts->{useGenre} && @{$ts->{genres}//[]}>=1 && $ts->{textClassU} ne $ts->{genres}[0]);
@@ -1270,8 +1271,8 @@ sub plotInitialize {
 
 
   ##-- slice arithmetic
-  ## + TODO: figure out how to handle nonzero $offset for units other than 'y'
-  ## + TODO: figure out a good way to assign "origin" date for units other than 'y'
+  ## + TODO(?): figure out a good general way to assign "origin" date for units other than 'y'
+  ##   - current code uses "Julian Day" Mon 1-01-01
   my ($sliceby,$offset) = @$vars{qw(sliceby offset)};
   my ($ymd0, $date2ymd,$ymd2date, $ymd2slice,$date2slice, $sliceadd,$datecmp);
   $ymd0       = $vars->{ymd0}     = [1,1,1]; #[$date2ymd->('1970-01-01')]; ##-- origin date (for fine-slices)
@@ -1279,36 +1280,57 @@ sub plotInitialize {
   $ymd2date   = $vars->{ymd2date}  = \&dateJoin;
 
   if ($sliceby == 0) {
+    ##-- SLICEBY=0 (global ~ years)
     $date2slice = $ymd2slice = $sliceadd = sub { 0 };
     $datecmp    = sub { $_[0] <=> $_[1] };
   }
   elsif ($unit eq 'd') {
+    ##-- UNIT=d (days)
     $ymd2slice = sub { sprintf("%d-%02d-%02d", map {($_||1)} @_[0..2]) };
     $sliceadd  = sub { $ymd2slice->(Date::Calc::Add_Delta_Days($date2ymd->($_[0]), $_[1])) };
     $date2slice = sub {
-      return $ymd2slice->
-	(Date::Calc::Add_Delta_Days(@$ymd0,
-				    int(Date::Calc::Delta_Days(@$ymd0,$date2ymd->($_[0]))/$sliceby)*$sliceby))
-      };
+      return $ymd2slice->(Date::Calc::Add_Delta_Days(@$ymd0,
+						     int((Date::Calc::Delta_Days(@$ymd0,$date2ymd->($_[0]))-$offset)/$sliceby)
+						     * $sliceby
+						     + $offset))
+    };
     #sub { $date2days->($a) <=> $date2days->($b) };
     $datecmp = \&dateCmp;
+    if (($vars->{offset}//'') eq '' && $vars->{sliceby} && $xumin ne '*') {
+      ##-- default offset from user-specified xrange
+      $offset = $vars->{offset} = Date::Calc::Delta_Days(@$ymd0,$date2ymd->($xumin)) % $vars->{sliceby};
+    }
   }
   elsif ($unit eq 'm') {
+    ##-- UNIT=m (months)
     $ymd2slice = sub { sprintf("%d-%02d", map {($_||1)} @_[0..1]) };
     $sliceadd  = sub { $ymd2slice->(Date::Calc::Add_Delta_YM($date2ymd->($_[0]), 0,$_[1])) };
     my ($Dy,$Dm,$Dd);
     $date2slice = sub {
       ($Dy,$Dm,$Dd) = Date::Calc::Delta_YMD(@$ymd0,$date2ymd->($_[0]));
-      return $ymd2slice->( Date::Calc::Add_Delta_YM(@$ymd0, 0,int(($Dm+12*$Dy)/$sliceby)*$sliceby) );
+      return $ymd2slice->( Date::Calc::Add_Delta_YM(@$ymd0, 0,
+						    int(($Dm+12*$Dy-$offset)/$sliceby)
+						    * $sliceby
+						    + $offset));
     };
     #sub { $date2days->($a) <=> $date2days->($b) };
     $datecmp = \&dateCmp;
+    if (($vars->{offset}//'') eq '' && $vars->{sliceby} && $xumin ne '*') {
+      ##-- default offset from user-specified xrange
+      ($Dy,$Dm,$Dd) = Date::Calc::Delta_YMD(@$ymd0,$date2ymd->($xumin));
+      $offset = $vars->{offset} = ($Dm+12*$Dy) % $sliceby;
+    }
   }
   else { #($unit eq 'y')
+    ##-- UNIT=y (years)
     $ymd2slice = sub { $_[0] };
     $sliceadd  = sub { $_[0]+$_[1] };
     $date2slice = sub { int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
     $datecmp    = sub { $_[0] <=> $_[1] };
+    if (($vars->{offset}//'') eq '' && $vars->{sliceby} && $xumin ne '*') {
+      ##-- default offset from user-specified xrange
+      $offset = $vars->{offset} = $xumin % $vars->{sliceby};
+    }
   }
   @$vars{qw(ymd2slice date2slice sliceadd datecmp)} = ($ymd2slice,$date2slice,$sliceadd,$datecmp);
   my $sliceof = $vars->{sliceof} = $date2slice; ##-- alias
@@ -1317,6 +1339,10 @@ sub plotInitialize {
   #$date2days  = $vars->{date2days} = sub { Date::Calc::Date_to_Days($date2ymd->($_[0])) };
   #$days2date  = $vars->{days2date} = sub { Date::Calc::Add_Delta_Days($ymd0, $_[0]-1); };
   #$days2slice = $vars->{days2slice} = sub { $date2slice->( $days2date->($_[1]) ); };
+
+  ##-- default offset if user specified trivial range
+  $offset = $vars->{offset} = 0 if (!$offset);
+  $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset} ; unit=$vars->{unit}\n");
 
   ##-- get list of all *dates* in range (at $unit-resolution)
   my @alldates = qw();
