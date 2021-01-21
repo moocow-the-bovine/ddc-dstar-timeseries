@@ -40,7 +40,6 @@ sub prune_outliers {
   die(__PACKAGE__, "::prune_outliers(): 'conf' parameter must be in range [0:1]") if ($conf<0 || $conf>1);
 
   ##-- setup enums
-  my %date2id  = map {($_=>$dates->[$_])} (0..$#$dates);
   my $nc = @$classes;
   my $nd = @$dates;
 
@@ -64,7 +63,7 @@ sub prune_outliers {
 						   ) if (!$good->isempty && !$bad->isempty);
 
     ##-- propagate fixes back to \%dc2f
-    $dc2f->{"$date2id{$_}${sep}${class}"} = $fixed->at($_) foreach ($bad->list);
+    $dc2f->{"$dates->[$_]${sep}${class}"} = $fixed->at($_) foreach ($bad->list);
   }
 
   return $dc2f;
