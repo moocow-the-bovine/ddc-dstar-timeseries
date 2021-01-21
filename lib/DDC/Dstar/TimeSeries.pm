@@ -17,6 +17,7 @@ use JSON;
 use POSIX qw(strftime);
 #use Storable;
 use File::Temp;
+#use Date::Calc; ##-- required for slice units other than 'y' (=year)
 
 use Encode qw(decode_utf8 encode_utf8);
 use version;
@@ -125,14 +126,20 @@ our $USE_DB_REGEX = 0;
 ##    pfmt => $pfmt,            ##-- convenience alias for $pformats{$vars{pformat}}
 ##    xr(min|max) => $xrminmax, ##-- parsed $vars{xrange} limits or ''
 ##    xu(min|max) => $xuminmax, ##-- parsed user $vars{xrange} limits or '*'
-##    y(min|max) => $yminmax,   ##-- (min|max)-year, from rc-file or user request
+##    y(min|max) => $yminmax,   ##-- (min|max)-date at requested granularity, from rc-file, user request, or cache
 ##    classes => \@classes,     ##-- all genres for this query
 ##    dc2f => \%dc2f,           ##-- scaling constants (date+class): "$date\t$class"=>$f
 ##    c2f => \%c2f,             ##-- scaling constants (class): "$class"=>$f
 ##    d2f => \%d2f              ##-- scaling constants (date): "$date"=>$f
 ##    f_corpus => $f_corpus,    ##-- scaling constants (corpus): $f
 ##    slices => \@slices,       ##-- all slices for this query (honors $vars{gaps} request)
-##    sliceof => \&sliceof,     ##-- $slice = sliceof($date)
+##    date2ymd => \&date2ymd,   ##-- ($y,$m,$d) = $date2ymd->($date_or_slice)
+##    ymd2date => \&ymd2date,   ##-- $date = $ymd2date->($y,$m,$d)  # unused(?)
+##    ymd2slice => \&ymd2slice, ##-- $slice = $ymd2slice->($y,$m,$d)
+##    date2slice => \&date2slice,  ##-- $slice = $sliceof->($date)  # alias: 'sliceof'
+##    sliceadd => \$sliceadd,   ##-- $slice_sum = $sliceadd->($slice, $units) # implicitly uses $unit
+##    ymd0 => \@ymd0,           ##-- ($y0,$m0,$d0) = @ymd0 : "origin" date for fine-slice computations (Mon 1-01-01; "Julian Day", also for Date::Calc::Date_to_Days)
+##    alldates => \@alldates,   ##-- sorted list of all dates in $vars{xrange}, at $unit-resolution
 ##   )
 sub new {
   my ($that,%args) = @_;
@@ -349,10 +356,13 @@ sub ddcCounts {
 ##----------------------------------------------------------------------
 ## $bool = $ts->wantDB()
 ##  + returns true if we can at least try to use DB
-##  + checks $ts->{useDB}, $ts->{dbFile}, $ts->{vars}{nodb}
+##  + checks $ts->{useDB}, $ts->{dbFile}, $ts->{vars}{nodb}, $ts->{vars}{unit}
 sub wantDB {
   my $ts = shift;
-  return ($ts->{useDB} && $ts->{dbFile} && -r $ts->{dbFile} && (!$ts->{vars} || $ts->{vars}{usedb}));
+  return (($ts->{useDB} && $ts->{dbFile} && -r $ts->{dbFile})
+	  &&
+	  (!$ts->{vars} || ($ts->{vars}{usedb} && ($ts->{vars}{unit}||'y') eq 'y'))
+	 );
 }
 
 ##----------------------------------------------------------------------
@@ -1006,6 +1016,30 @@ sub parseRequest {
 ## Subs: miscellaneous
 
 ##----------------------------------------------------------------------
+## ($y,$m,$d) = CLASS_OR_OBJECT->dateSplit($date1,$date2)
+sub dateSplit {
+  shift if (UNIVERSAL::isa($_[0],__PACKAGE__));
+  return map {($_||1)+0} (split(/(?<=[0-9])-/,$_[0],3))[0..2];
+}
+
+##----------------------------------------------------------------------
+## $date = CLASS_OR_OBJECT->dateJoin($y,$m,$d)
+sub dateJoin {
+  shift if (UNIVERSAL::isa($_[0],__PACKAGE__));
+  return join('-', map {($_||1)+0} @_[0..2]);
+}
+
+##----------------------------------------------------------------------
+## $cmp = CLASS_OR_OBJECT->datecmp($date1,$date2)
+##  + generic 3-way date comparison operator
+sub dateCmp {
+  my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
+  my @d1 = dateSplit($_[0]);
+  my @d2 = dateSplit($_[1]);
+  return ($d1[0] <=> $d2[0] || $d1[1] <=> $d2[1] || $d1[2] <=> $d2[2]);
+}
+
+##----------------------------------------------------------------------
 ## $str = CLASS_OR_OBJECT->unescapeDDC($str)
 sub unescapeDDC {
   my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
@@ -1191,7 +1225,13 @@ sub plotInitialize {
   }
   ##-- sanity check slice unit
   $vars->{unit} ||= 'y';
-  die("unknown slice unit '$vars->{unit}' must be one of {y,m,d}") if ($vars->{unit} !~ /^[ymd]$/);
+  my $unit = $vars->{unit};
+  die("unknown slice unit '$unit' must be one of {y,m,d}") if ($unit !~ /^[ymd]$/);
+  if ($unit ne 'y') {
+    die("$0 ERROR: can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
+    require Date::Calc;
+    require Date::Parse;
+  }
 
   ##-- range variables
   my ($xrmin,$xrmax) = map {$_//''} split(/:/, ($vars->{xrange}||'*:*'), 2);
@@ -1228,30 +1268,82 @@ sub plotInitialize {
   }
   $vars->{grand} ||= !@{$ts->{genres}};
 
-  ##-- scaling constants (from cache)
-  my ($sliceby,$offset) = @$vars{qw(sliceby offset)};
-  my ($sliceof);
-  if ($sliceby == 0) {
-    $sliceof = sub { 0 };
-  }
-  else { #if ($vars->{unit} eq 'y')
-    $sliceof = sub { int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
-  }
-  $vars->{sliceof} = $sliceof;
 
+  ##-- slice arithmetic
+  ## + TODO: figure out how to handle nonzero $offset for units other than 'y'
+  ## + TODO: figure out a good way to assign "origin" date for units other than 'y'
+  my ($sliceby,$offset) = @$vars{qw(sliceby offset)};
+  my ($ymd0, $date2ymd,$ymd2date, $ymd2slice,$date2slice, $sliceadd,$datecmp);
+  $ymd0       = $vars->{ymd0}     = [1,1,1]; #[$date2ymd->('1970-01-01')]; ##-- origin date (for fine-slices)
+  $date2ymd   = $vars->{date2ymd}  = \&dateSplit;
+  $ymd2date   = $vars->{ymd2date}  = \&dateJoin;
+
+  if ($sliceby == 0) {
+    $date2slice = $ymd2slice = $sliceadd = sub { 0 };
+    $datecmp    = sub { $_[0] <=> $_[1] };
+  }
+  elsif ($unit eq 'd') {
+    $ymd2slice = sub { sprintf("%d-%02d-%02d", map {($_||1)} @_[0..2]) };
+    $sliceadd  = sub { $ymd2slice->(Date::Calc::Add_Delta_Days($date2ymd->($_[0]), $_[1])) };
+    $date2slice = sub {
+      return $ymd2slice->
+	(Date::Calc::Add_Delta_Days(@$ymd0,
+				    int(Date::Calc::Delta_Days(@$ymd0,$date2ymd->($_[0]))/$sliceby)*$sliceby))
+      };
+    #sub { $date2days->($a) <=> $date2days->($b) };
+    $datecmp = \&dateCmp;
+  }
+  elsif ($unit eq 'm') {
+    $ymd2slice = sub { sprintf("%d-%02d", map {($_||1)} @_[0..1]) };
+    $sliceadd  = sub { $ymd2slice->(Date::Calc::Add_Delta_YM($date2ymd->($_[0]), 0,$_[1])) };
+    my ($Dy,$Dm,$Dd);
+    $date2slice = sub {
+      ($Dy,$Dm,$Dd) = Date::Calc::Delta_YMD(@$ymd0,$date2ymd->($_[0]));
+      return $ymd2slice->( Date::Calc::Add_Delta_YM(@$ymd0, 0,int(($Dm+12*$Dy)/$sliceby)*$sliceby) );
+    };
+    #sub { $date2days->($a) <=> $date2days->($b) };
+    $datecmp = \&dateCmp;
+  }
+  else { #($unit eq 'y')
+    $ymd2slice = sub { $_[0] };
+    $sliceadd  = sub { $_[0]+$_[1] };
+    $date2slice = sub { int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
+    $datecmp    = sub { $_[0] <=> $_[1] };
+  }
+  @$vars{qw(ymd2slice date2slice sliceadd datecmp)} = ($ymd2slice,$date2slice,$sliceadd,$datecmp);
+  my $sliceof = $vars->{sliceof} = $date2slice; ##-- alias
+
+  #my ($date2days,$days2date,$days2slice);
+  #$date2days  = $vars->{date2days} = sub { Date::Calc::Date_to_Days($date2ymd->($_[0])) };
+  #$days2date  = $vars->{days2date} = sub { Date::Calc::Add_Delta_Days($ymd0, $_[0]-1); };
+  #$days2slice = $vars->{days2slice} = sub { $date2slice->( $days2date->($_[1]) ); };
+
+  ##-- get list of all *dates* in range (at $unit-resolution)
+  my @alldates = qw();
+  if ($unit eq 'y') {
+    @alldates = ($ymin..$ymax);
+  } else {
+    for (my $date=$ymin; $date le $ymax; $date=$sliceadd->($date,1)) {
+      push(@alldates,$date);
+    }
+  }
+  $vars->{alldates} = \@alldates;
+
+  ##-- get scaling constants (from cache)
   my @classes = (@{$ts->{genres}} && $ts->{textClassKey} ? (grep {($_//'') ne ''} map {split(/[,\t]+/,$_)} @{$ts->{genres}}) : $ts->{textClassU});
   my %dc2f = qw();
   my %c2f = qw();
   my %d2f = qw();
   my $f_corpus = 0;
   my $cache = $ts->ensureCache();
-  my ($class,$date,$val);
+  my ($class,$date,$slice,$val);
   foreach $class (@classes) {
-    foreach $date ($ymin..$ymax) {
+    foreach $date (@alldates) {
+      $slice = $sliceof->($date);
       next if (!($val = $cache->{"$date\t$class"}));
-      next if ($date < $xrmin || $date > $xrmax); ##-- ensure date restrictions are applied (redundant if iterating ymin..ymax?)
-      $dc2f{ $sliceof->($date)."\t".$class } += $val;
-      $d2f{ $sliceof->($date) } += $val;
+      next if ($datecmp->($date,$xrmin)<0 || $datecmp->($date,$xrmax)>0); ##-- ensure date restrictions are applied (redundant if iterating ymin..ymax?)
+      $dc2f{ "$slice\t$class" } += $val;
+      $d2f{ $slice } += $val;
       $c2f{ $class } += $val;
       $f_corpus += $val;
     }
@@ -1259,11 +1351,22 @@ sub plotInitialize {
   @$vars{qw(classes dc2f c2f d2f f_corpus)} = (\@classes, \%dc2f, \%c2f, \%d2f, $f_corpus);
 
   ##-- get list of all slices
-  my @slices = ($vars->{gaps}
-		? (sort {$a<=>$b} keys(%d2f))	 			    	   ##-- instantiated only
-		: ($sliceby==0 ? (0)
-		   : map {$_*$sliceby+$offset} (int(($xrmin-$offset)/$sliceby)..int(($xrmax-$offset)/$sliceby))) ##-- for "gaps=0" (mantis bug #7562)
-	       );
+  my (@slices);
+  if ($sliceby==0) {
+    ##-- no slices
+    @slices = (0);
+  } elsif ($vars->{gaps}) {
+    ##-- gaps allowed: instantiated slices only
+    @slices = sort {$datecmp->($a,$b)} keys(%d2f);
+  } elsif ($unit ne 'y') {
+    ##-- fine-grained slices: extract from @alldates
+    my %slices = qw();
+    $slices{$sliceof->($_)} = undef foreach (@alldates);
+    @slices = sort {$datecmp->($a,$b)} keys %slices;
+  } else { #($unit eq 'y')
+    ##-- year-slices, no gaps, but may contain offset
+    @slices = map {$_*$sliceby+$offset} (int(($xrmin-$offset)/$sliceby)..int(($xrmax-$offset)/$sliceby)); ##-- for "gaps=0" (mantis bug #7562)
+  }
   $vars->{slices} = \@slices;
 
   return $ts;
@@ -1279,7 +1382,7 @@ sub plotFetchCounts {
 
   ##-- variables
   my $vars = $ts->{vars};
-  my ($query,$sliceof,$xrmin,$xrmax,$c2f,$d2f) = @$vars{qw(query sliceof xrmin xrmax c2f d2f)};
+  my ($query,$sliceof,$xrmin,$xrmax,$c2f,$d2f,$datecmp) = @$vars{qw(query sliceof xrmin xrmax c2f d2f datecmp)};
 
   ##-- real guts: acquire & scan ddc histogram data
   my %counts = qw();
@@ -1297,10 +1400,17 @@ sub plotFetchCounts {
       ($val,$kdate,$kclass) = map {$_//''} @$_[0..2];
       $kclass =~ s/:.*//;                             ##-- class-name trimming here should be redundant, we include it for extra paranoia
       next if (!exists($c2f->{$kclass}));             ##-- ignore "unknown" classes in count response
-      next if ($kdate < $xrmin || $kdate > $xrmax);   ##-- apply date restrictions if requested
+      next if (					      ##-- apply date restrictions if requested
+	       $datecmp->($kdate,$xrmin) < 0
+	       ||
+	       $datecmp->($kdate,$xrmax) > 0
+	      );
       $kslice = $sliceof->($kdate);
-      next if ($kslice < $minslice || !exists $d2f->{$sliceof->($kdate)} || !exists($c2f->{$kclass}));
-      $counts{$sliceof->($kdate)."\t".$kclass} += $val;
+      next if ($datecmp->($kslice,$minslice) < 0
+	       || !exists($d2f->{$kslice})
+	       || !exists($c2f->{$kclass})
+	      );
+      $counts{"$kslice\t$kclass"} += $val;
       $f_query += $val;
     }
   }
@@ -1437,7 +1547,8 @@ sub plotSmooth {
   $ts->cachedebug("plotSmooth()\n");
 
   my $vars = $ts->{vars};
-  my ($counts,$window,$sliceby,$wbase,$logavg,$xrmin,$xrmax) = @$vars{qw(counts window sliceby wbase logavg xrmin xrmax)};
+  my ($counts,$window,$sliceby,$sliceadd,$datecmp,$wbase,$logavg,$xrmin,$xrmax)
+    = @$vars{qw(counts window sliceby sliceadd datecmp wbase logavg xrmin xrmax)};
 
   ##-- apply moving-average smoothing window
   my $wcounts = $counts;
@@ -1449,8 +1560,8 @@ sub plotSmooth {
       ($kdate,$kclass) = split(/\t/,$_,2);
       $val = $wtotal = 0;
       for ($di=-$window; $di <= $window; ++$di) {
-	$ddate = $kdate + $di*$sliceby;
-	next if ($ddate < $xrmin || $ddate > $xrmax);
+	$ddate = $sliceadd->($kdate,$di);
+	next if ($datecmp->($ddate,$xrmin) < 0 || $datecmp->($ddate,$xrmax) > 0);
 	$dval    = $counts->{$ddate."\t".$kclass} // 0;
 	$wval    = $wbase ? ($wbase**-abs($di)) : 1;
 	$val    += $wval * ($logavg ? log($dval+0.5) : $dval);
@@ -1473,14 +1584,14 @@ sub plotCollect {
   $ts->cachedebug("plotCollect()\n");
 
   my $vars = $ts->{vars};
-  my ($classesh,$counts,$countsRaw) = @$vars{qw(classesh counts countsRaw)};
+  my ($classesh,$counts,$countsRaw,$datecmp) = @$vars{qw(classesh counts countsRaw datecmp)};
   #my ($xrmin,$xrmax) = @$vars{qw(xrmin xrmax)};
 
   ##-- collect data points
   my ($date,$class);
   my @rows = (
 	      sort {
-		(($a->{date}//0) <=> ($b->{date}//0)) || (($a->{class}//'') cmp ($b->{class}//''))
+		$datecmp->($a->{date},$b->{date}) || ($a->{class}//'') cmp ($b->{class}//'')
 	      }
 	      grep { exists $classesh->{$_->{class}//''}
 		       #-- 2017-02-15: apply xrmin,xrmax at DATE-level, not SLICE-level
