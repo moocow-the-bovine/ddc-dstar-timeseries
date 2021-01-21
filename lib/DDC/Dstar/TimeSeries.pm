@@ -1228,7 +1228,7 @@ sub plotInitialize {
   my $unit = $vars->{unit};
   die("unknown slice unit '$unit' must be one of {y,m,d}") if ($unit !~ /^[ymd]$/);
   if ($unit ne 'y') {
-    die("$0 ERROR: can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
+    die(__PACKAGE__, "::plotInitialize(): can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
     require Date::Calc;
     require Date::Parse;
   }
@@ -1255,7 +1255,7 @@ sub plotInitialize {
   @$vars{qw(xrmin xrmax xumin xumax ymin ymax)} = ($xrmin,$xrmax, $xumin,$xumax, $ymin,$ymax);
 
   ##-- guess default offset if user specified non-trivial range
-  $vars->{offset} ||= $xumin ne '*' ? ($xumin % $vars->{sliceby}) : 0;
+  $vars->{offset} ||= $unit eq 'y' && $xumin ne '*' && $vars->{sliceby} ? ($xumin % $vars->{sliceby}) : 0;
   $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset} ; unit=$vars->{unit}\n");
 
   ##-- genre variables
@@ -1567,7 +1567,7 @@ sub plotSmooth {
 	$val    += $wval * ($logavg ? log($dval+0.5) : $dval);
 	$wtotal += $wval;
       }
-      $val /= $wtotal;
+      $val /= $wtotal if ($wtotal);
       $val  = exp($val)-0.5 if ($logavg);
       $wcounts->{$_} = $val;
     }
@@ -1678,6 +1678,8 @@ sub plotContent {
     my ($set_xtics,$set_ytics);
     my ($xticmax, $yticmax) = (2000,1000);
     if ($bare) {
+      die(__PACKAGE__, "::plotContent(): can't handle 'bare'-plot for slice-unit '$vars->{unit}'")
+	if (($vars->{unit}||'y') ne 'y');
       my ($xmin,$xmax) = ($vars->{xrange} =~ /(.*):(.*)/ ? ($1,$2) : ('*','*'));
       my ($ymin,$ymax) = ($vars->{yrange} =~ /(.*):(.*)/ ? ($1,$2) : ('*','*'));
       $xmin    = $ts->rowmin('date',$rows) if ($xmin eq '*');
@@ -1747,16 +1749,44 @@ sub plotContent {
       $ts->cachedebug("using tempfile $tmpfile\n") if ($ts->{debug});
     }
 
+    ##-- gnuplot: x-axis format (especially for fine-slices)
+    my ($set_xrange, $set_timefmt);
+    if (($vars->{unit}||'y') eq 'y') {
+      $set_xrange = qq(set xrange [$vars->{xrange}]);
+      $set_timefmt = '';
+    } else {
+      $set_xrange = ('set xrange ['
+		     .($vars->{xumin} eq '*' ? '*' : ('"'.$vars->{sliceof}->($vars->{xrmin}).'"'))
+		     .':'
+		     .($vars->{xumax} eq '*' ? '*' : ('"'.$vars->{sliceof}->($vars->{xrmax}).'"'))
+		     .']'
+		    );
+      my $timefmt = $vars->{unit} eq 'm' ? '%Y-%m' : '%Y-%m-%d';
+      $set_timefmt = join('',
+			  map {"$_\n"}
+			  qq(set xdata time;),
+			  qq(set timefmt "$timefmt";),
+			  qq(set format x "$timefmt";),
+			  qq(set xtics rotate by 60 right;),
+			 );
+    }
+
     ##-- gnuplot: script
-    my %pcmds = (map {($_=>"\"-\"".($vars->{smooth} ? " smooth $vars->{smooth}" : '')." title \"$_\"")} @$classes);
+    my %pcmds = map {
+      ($_ => ("\"-\""
+	      .(($vars->{unit}||'y') ne 'y' ? ' using 1:2' : '')
+	      .($vars->{smooth} ? " smooth $vars->{smooth}" : '')
+	      ." title \"$_\""))
+    } @$classes;
     $pcmds{$ts->{textClassU}} = "$pcmds{$ts->{textClassU}} w l ".($bare ? "lt 1 lw 3.5 lc rgb \"#0087c2\"" : "lt 7 lw 5") if ($vars->{grand});
     $pcmds{$ts->{xBarClass}}  = "\"-\" w i lt 1 lw 0.75 lc rgb \"#979797\" notitle" if (exists $pcmds{$ts->{xBarClass}});
     my $gp = join('',
 		  map {"$_\n"}
 		  qq(set style data $vars->{style};),
+		  $set_timefmt,
 		  ($xlabel && $xlabel ne 'none' ? qq(set xlabel "$xlabel";) : qq(unset xlabel;)),
 		  ($ylabel && $ylabel ne 'none' ? qq(set ylabel "$ylabel";) : qq(unset ylabel;)),
-		  qq(set xrange [$vars->{xrange}];),
+		  $set_xrange,
 		  qq(set yrange [$yrange];),
 		  "$set_grid;",
 		  "$set_logscale;",
