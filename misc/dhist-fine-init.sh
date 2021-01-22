@@ -13,15 +13,15 @@ set -o errexit
 #set -o xtrace
 
 mkdir -p fine
-conbase=()
+cond1g=()
 for con in "${confiles[@]}"; do
     "$dir0/dhist-fine-con2ddat.sh" "$con" d >fine/$(basename "$con").d.1g
-    conbase[${#conbase[@]}]=$(basename "$con")
+    cond1g[${#cond1g[@]}]=fine/$(basename "$con").d.1g
 done
 
 set -o xtrace
-tt-1grams.perl -union $(echo "${conbase[@]}" | perl -pe 's/\.con\b/\.con.d.1g') > "fine/dhist.d.1g"
+tt-1grams.perl -union "${cond1g[@]}" >"fine/dhist.d.1g"
 "$dir0/dhist-fine-ddat2mdat.sh" "fine/dhist.d.1g" > "fine/dhist.m.1g"
-"$dir0/dhist-fine-mdat2ydat.sh" "fine/dhist.m.1g" > "fine.dhist.y.1g"
+"$dir0/dhist-fine-mdat2ydat.sh" "fine/dhist.m.1g" > "fine/dhist.y.1g"
 
     
