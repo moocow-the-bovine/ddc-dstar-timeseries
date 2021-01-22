@@ -1,8 +1,7 @@
 #!/bin/bash
 
-[ -n "$RML" ] && RML=/home/ddc-dstar/dstar/rml.d/rml
-[ -n "$GENRE" ] && GENRE='textClass~s/:.*$//'
-export RML GENRE
+[ -z "$RML" ] && RML=/home/ddc-dstar/dstar/rml.d/rml
+[ -z "$GENRE" ] && GENRE='textClass~s/:.*$//'
 
 if [ $# -lt 1 ] ; then
     echo "Usge: $0 CONFILE [UNIT=y] >dhist.UNIT.1g" >&2
@@ -21,7 +20,7 @@ else #if [ "$UNIT" = y ] ; then
     dexpr='date/1'
 fi
 
-qstr="count(* #sep) #by[$dexpr,$genre]"
+qstr="count(* #sep) #by[\$Lemma,$dexpr,$GENRE]"
 
 set -o errexit
 set -o pipefail
