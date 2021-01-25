@@ -97,7 +97,6 @@ our $USE_DB_REGEX = 0;
 ##     cacheFile => $file,      ##-- JSON file to load/store cache (undef=always update)
 ##     cacheMinAge => $secs,    ##-- minimum cache age for auto-update (in seconds, e.g. 60*60*24*7 ~ 1 week; undef=no minimum)
 ##     cacheUseInfo => $bool,   ##-- use slower but more reliable server 'info' request to get server timestamp? (default=0)
-##     cacheUnit => $unit,      ##-- unit of current cache file qw(y m d); default=y
 ##     textClassKey => $key,    ##-- ddc-indexed textClass meta-attribute (should be merged with 'textClassTweak')
 ##     textClassTweak => $suff, ##-- ddc textClass meta-attribute count-by suffix ('~s/:.*//')
 ##     textClassU => $uclass,   ##-- "universal" genre for single-plot or grand-average mode
@@ -109,7 +108,9 @@ our $USE_DB_REGEX = 0;
 ##     ##-- guts
 ##     genres => \@genres,      ##-- genres to plot
 ##     client => $client,       ##-- underlying DDC::Client object
-##     cache => \%cache,        ##-- global count-cache ( "${date}\t${class}" => $TOTAL, ... )
+##     cache_y => \%cache_y,    ##-- global count-cache by year ( "${year}\t${class}" => $TOTAL, ... )
+##     cache_m => \%cache_m,    ##-- global count-cache by year+month ( "${year}-${month}\t${class}" => $TOTAL, ... )
+##     cache_d => \%cache_d,    ##-- global count-cache by year+month+day ( "${year}-${month}-${day}\t${class}" => $TOTAL, ... )
 ##     vars => \%vars,          ##-- parsed CGI request
 ##     dbhash => \%dbhash,      ##-- tied hash
 ##     dbtied => \$tied,        ##-- tied(%dbhash)
@@ -186,7 +187,6 @@ sub new {
 		    cacheFile => "$dir/dhist-cache.json",
 		    cacheMinAge => undef,
 		    cacheUseInfo => 0,
-		    cacheUnit => 'y',
 		    textClassKey => 'textClass',
 		    textClassTweak => '~s/:.*//',
 		    textClassU => 'Gesamt',
@@ -195,7 +195,9 @@ sub new {
 		    ##-- guts
 		    genres => [],
 		    client => undef,
-		    cache => undef,
+		    cache_y => undef,
+		    cache_m => undef,
+		    cache_d => undef,
 		    gpVersion => undef,
 		    gpVersionFile => "$dir/gpversion.txt",
 		    gpVersionTTL => (60*60*24),
@@ -360,8 +362,7 @@ sub ddcCounts {
 sub wantDB {
   my $ts = shift;
   return (($ts->{useDB} && $ts->{dbFile} && -r $ts->{dbFile})
-	  &&
-	  (!$ts->{vars} || ($ts->{vars}{usedb} && ($ts->{vars}{unit}||'y') eq 'y'))
+	  #&& (!$ts->{vars} || ($ts->{vars}{usedb} && ($ts->{vars}{unit}||'y') eq 'y'))
 	 );
 }
 
@@ -564,7 +565,10 @@ sub genericCounts {
     my ($rsp);
     my $dbhow = ($ts->{vars}{usedb} // $ts->{useDB}) || '0';
     eval {
-      if ($dbhow & $USE_DB_FAST) {
+      if (($ts->{vars}{unit}||'y') ne 'y') {
+	die("slice unit '$ts->{vars}{unit}' not supported by DB");
+      }
+      elsif ($dbhow & $USE_DB_FAST) {
 	##-- try DB_File query: fast regex hack
 	print STDERR __PACKAGE__, "::genericCounts(): trying local DB [fast]\n" if ($ts->{debug});
 
@@ -807,10 +811,11 @@ sub cachedebug {
 
 ##----------------------------------------------------------------------
 ## \%cache = $ts->ensureCache()
+## \%cache = $ts->ensureCache($unit)
 sub ensureCache {
   my $ts = shift;
-  my $unit = $ts->{vars}{unit} || 'y';
-  return $ts->{cache} if (defined($ts->{cache}) && ($ts->{cacheUnit}||'y') eq $unit);
+  my $unit = shift || $ts->{vars}{unit} || 'y';
+  return $ts->{"cache_${unit}"} if (defined($ts->{"cache_${unit}"}));
 
   my $cachefile  = $ts->{cacheFile};
   $cachefile .= "_$unit" if ($unit ne 'y');
@@ -856,18 +861,25 @@ sub ensureCache {
     }
 
     ##-- return
-    $ts->{cacheUnit} = $unit;
-    return $ts->{cache} = $cache;
+    return $ts->{"cache_${unit}"} = $cache;
   }
 
-  if (!$ts->{cache} || ($ts->{cacheUnit}//'y') ne $unit) {
+  if (!$ts->{"cache_${unit}"}) {
     ##-- just load cache-file
     $ts->cachedebug("re-loading cache data (cache~$cache_stamp ; server~".($server_stamp//'undef')." ; unit=$unit)\n");
-    $ts->{cache} = $ts->loadCache($cachefile)
+    $ts->{"cache_${unit}"} = $ts->loadCache($cachefile)
       or die(__PACKAGE__, "::ensureCache(): failed to retrieve cache data from $cachefile: $!");
-    $ts->{cacheUnit} = $unit;
   }
-  return $ts->{cache};
+  return $ts->{"cache_${unit}"};
+}
+
+##----------------------------------------------------------------------
+## \%cache = $ts->cache()
+## \%cache = $ts->cache($unit)
+##  + does NOT auto-load or auto-populate
+sub cache {
+  my $ts = shift;
+  return $ts->{"cache_".($_[0]||'y')};
 }
 
 ##==============================================================================
@@ -1246,12 +1258,12 @@ sub plotInitialize {
     $ymin //= $xrmin;
     $ymax //= $xrmax;
     if (($ymin//'') =~ /^\*?$/) {
-      $ts->ensureCache();
-      $ymin = (sort {$a cmp $b} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
+      my $cache = $ts->ensureCache();
+      $ymin = (sort {$a cmp $b} map {(split(/\t/,$_))[0]} keys %$cache)[0];
     }
     if (($ymax//'') =~ /^\*?$/) {
-      $ts->ensureCache();
-      $ymax = (sort {$b cmp $a} map {(split(/\t/,$_))[0]} keys %{$ts->{cache}})[0];
+      my $cache = $ts->ensureCache();
+      $ymax = (sort {$b cmp $a} map {(split(/\t/,$_))[0]} keys %$cache)[0];
     }
   }
   $xrmin=$ymin if ($xumin eq '*');
@@ -1264,7 +1276,7 @@ sub plotInitialize {
     if (!$ts->{useGenre} && @{$ts->{genres}//[]}>=1 && $ts->{textClassU} ne $ts->{genres}[0]);
   if (!@{$ts->{genres}//[]}) {
     $ts->ensureCache();
-    my %genres = (map {(split(/\t/,$_))[1]=>undef} keys %{$ts->{cache}});
+    my %genres = (map {(split(/\t/,$_))[1]=>undef} keys %{$ts->cache});
     $ts->{genres} = [grep {($_//'') ne ''} sort keys %genres];
   }
   $vars->{grand} ||= !@{$ts->{genres}};
