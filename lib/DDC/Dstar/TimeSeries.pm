@@ -138,7 +138,7 @@ our $USE_DB_REGEX = 0;
 ##    ymd2date => \&ymd2date,   ##-- $date = $ymd2date->($y,$m,$d)  # unused(?)
 ##    ymd2slice => \&ymd2slice, ##-- $slice = $ymd2slice->($y,$m,$d)
 ##    date2slice => \&date2slice,  ##-- $slice = $sliceof->($date)  # alias: 'sliceof'
-##    sliceadd => \$sliceadd,   ##-- $slice_sum = $sliceadd->($slice, $units) # implicitly uses $unit
+##    sliceadd => \$sliceadd,   ##-- $slice_sum = $sliceadd->($date, $units) # implicitly uses $unit
 ##    ymd0 => \@ymd0,           ##-- ($y0,$m0,$d0) = @ymd0 : "origin" date for fine-slice computations (Mon 1-01-01; "Julian Day", also for Date::Calc::Date_to_Days)
 ##    alldates => \@alldates,   ##-- sorted list of all dates in $vars{xrange}, at $unit-resolution
 ##   )
@@ -1266,10 +1266,8 @@ sub plotInitialize {
       $ymax = (sort {$b cmp $a} map {(split(/\t/,$_))[0]} keys %$cache)[0];
     }
   }
-  $xrmin=$ymin if ($xumin eq '*');
-  $xrmax=$ymax if ($xumax eq '*');
-  $ts->cachedebug("computed ymin=$ymin , ymax=$ymax (xrmin=$xrmin , xrmax=$xrmax)\n");
-  @$vars{qw(xrmin xrmax xumin xumax ymin ymax)} = ($xrmin,$xrmax, $xumin,$xumax, $ymin,$ymax);
+  $ts->cachedebug("computed ymin=$ymin , ymax=$ymax\n");
+  @$vars{qw(ymin ymax)} = ($ymin,$ymax);
 
   ##-- genre variables
   warn(__PACKAGE__, "::plotInitialize(): WARNING: {useGenre} is false, but {genres} is neither empty nor the singleton {textClassU}: expect weirdness")
@@ -1355,6 +1353,12 @@ sub plotInitialize {
   ##-- default offset if user specified trivial range
   $offset = $vars->{offset} = 0 if (!$offset);
   $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset} ; unit=$vars->{unit}\n");
+
+  ##-- default xrmin,xrmax from corresponding slice values if user specified trivial limits
+  $xrmin=$date2slice->($ymin) if ($xumin eq '*');
+  $xrmax=$date2slice->($ymax) if ($xumax eq '*');
+  $ts->cachedebug("computed xrmin=$xrmin ; xrmax=$xrmax\n");
+  @$vars{qw(xrmin xrmax xumin xumax)} = ($xrmin,$xrmax, $xumin,$xumax);
 
   ##-- get list of all *dates* in range (at $unit-resolution)
   my @alldates = qw();
@@ -1598,7 +1602,7 @@ sub plotSmooth {
       ($kdate,$kclass) = split(/\t/,$_,2);
       $val = $wtotal = 0;
       for ($di=-$window; $di <= $window; ++$di) {
-	$ddate = $sliceadd->($kdate,$di);
+	$ddate = $sliceadd->($kdate,$di*$sliceby);
 	next if ($datecmp->($ddate,$xrmin) < 0 || $datecmp->($ddate,$xrmax) > 0);
 	$dval    = $counts->{$ddate."\t".$kclass} // 0;
 	$wval    = $wbase ? ($wbase**-abs($di)) : 1;
