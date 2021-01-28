@@ -902,6 +902,7 @@ sub unit {
   ##-- sanity check
   my $units = ($ts->{units}
 	       || ($ts->{dstar} ? $ts->{dstar}{hist_units} : undef)
+	       || 'y'
 	      );
   $units = $ts->{units} = {map {($_=>undef)} split(' ',$units)} if (!ref($units));
   if (defined($units) && !exists($units->{$unit})) {
