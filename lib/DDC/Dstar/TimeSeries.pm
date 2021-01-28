@@ -1385,8 +1385,8 @@ sub plotInitialize {
   $ts->cachedebug("computed sliceby=$vars->{sliceby} ; offset=$vars->{offset} ; unit=$vars->{unit}\n");
 
   ##-- default xrmin,xrmax from corresponding slice values if user specified trivial limits
-  $xrmin=$date2slice->($ymin) if ($xumin eq '*');
-  $xrmax=$date2slice->($ymax) if ($xumax eq '*');
+  $xrmin=$ymd2slice->($date2ymd->($ymin)) if ($xumin eq '*');
+  $xrmax=$ymd2slice->($date2ymd->($ymax)) if ($xumax eq '*');
   $ts->cachedebug("computed xrmin=$xrmin ; xrmax=$xrmax\n");
   @$vars{qw(xrmin xrmax xumin xumax)} = ($xrmin,$xrmax, $xumin,$xumax);
 
