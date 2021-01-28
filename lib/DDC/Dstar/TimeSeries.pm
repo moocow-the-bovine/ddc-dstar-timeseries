@@ -65,6 +65,7 @@ our $USE_DB_REGEX = 0;
 ##      server_port => $port,   ##   - DDC server port (old, backwards-compatible)
 ##      corpus => $corpus,      ##   - DDC corpus label
 ##      hist_enabled => $bool,  ##   - histograms enabled?
+##      hist_units => $units,   ##   - supported histogram time units (space-separated string; see 'unit' variable)
 ##      ##
 ##      ##-- stringification options (also available as globals)
 ##      stringifyComments => $bool,	##-- default=1
@@ -104,6 +105,7 @@ our $USE_DB_REGEX = 0;
 ##     gpVersion => $version,   ##-- underlying gnuplot version string (output of `gnuplot --version`)
 ##     gpVersionFile => $file,  ##-- filename to cache gnuplot version (undef=don't cache ~ 14ms overhead)
 ##     gpVersionTTL => $secs,   ##-- max age of gpVersionFile for cache-read (default=60*60*24 = 1 day)
+##     units => $units,         ##-- supported time units (space-separated string; see 'unit' variable and unit() method)
 ##     ##
 ##     ##-- guts
 ##     genres => \@genres,      ##-- genres to plot
@@ -156,6 +158,7 @@ sub new {
 			      server_port => '52000',
 			      corpus => 'corpus',
 			      hist_enabled => 'yes',
+			      hist_units => 'y m d',
 			      ##
 			      stringifyComments => 1,
 			      stringifyOriginal => 1,
@@ -329,7 +332,7 @@ sub ddcCounts {
               ? ($ts->{textClassKey}.($ts->{textClassTweak}||''))
               : "@\'$ts->{textClassU}'");
 
-  my $dunit = $ts->{vars}{unit}||'y';
+  my $dunit = $ts->unit();
   my ($dexpr);
   if ($dunit eq 'm') {
     $dexpr = 'date~s/^([+-]?[0-9]+)(\-[0-9]{1,2})?.*/$1$2/';
@@ -525,6 +528,7 @@ sub dbCounts {
 ##==============================================================================
 ## Subs: generic counts
 
+##----------------------------------------------------------------------
 ## @uniq = luniq(@items)
 sub luniq {
   my ($tmp);
@@ -565,7 +569,7 @@ sub genericCounts {
     my ($rsp);
     my $dbhow = ($ts->{vars}{usedb} // $ts->{useDB}) || '0';
     eval {
-      if (($ts->{vars}{unit}||'y') ne 'y') {
+      if ($ts->unit() ne 'y') {
 	die("slice unit '$ts->{vars}{unit}' not supported by DB");
       }
       elsif ($dbhow & $USE_DB_FAST) {
@@ -669,6 +673,7 @@ sub genericCounts {
 ##==============================================================================
 ## Subs: gnuplot version
 
+##----------------------------------------------------------------------
 ## $gpVersionString = $ts->gpVersionString()
 ##  + gets full gnuplot version string
 sub gpVersionString {
@@ -814,7 +819,7 @@ sub cachedebug {
 ## \%cache = $ts->ensureCache($unit)
 sub ensureCache {
   my $ts = shift;
-  my $unit = shift || $ts->{vars}{unit} || 'y';
+  my $unit = shift || $ts->unit();
   return $ts->{"cache_${unit}"} if (defined($ts->{"cache_${unit}"}));
 
   my $cachefile  = $ts->{cacheFile};
@@ -837,7 +842,7 @@ sub ensureCache {
   elsif ( !(-r $cachefile) || !(-s $cachefile) || $cache_stamp lt ($server_stamp=$ts->serverTimestamp()) ) {
     ##-- stale cache file: update it
     $server_stamp //= '(unknown)';
-    print STDERR __PACKAGE__, "::ensureCache(): cache update required (cache:$cache_stamp < server:$server_stamp)\n";
+    print STDERR __PACKAGE__, "::ensureCache(): cache update required for unit=$unit (cache:$cache_stamp < server:$server_stamp)\n";
     my $data = $ts->ddcCounts("*");
     die (__PACKAGE__, "::ensureCache(): error during cache-update query: ", ($data->{error_}//($@||'(unknown error)')))
       if (!$data || ($data->{istatus_}//0)!=0 || ($data->{nstatus_}//0)!=0 || $data->{error_});
@@ -857,7 +862,7 @@ sub ensureCache {
     if (!saveCache($cache,$cachefile)) {
       warn(__PACKAGE__, "::ensureCache(): failed to store cache to $cachefile: $!");
     } else {
-      print STDERR __PACKAGE__, "::ensureCache(): cache updated (new cache timestamp = ", $ts->fileTimestamp($cachefile), ")\n";
+      print STDERR __PACKAGE__, "::ensureCache(): cache updated for unit=$unit (new cache timestamp = ", $ts->fileTimestamp($cachefile), ")\n";
     }
 
     ##-- return
@@ -880,6 +885,30 @@ sub ensureCache {
 sub cache {
   my $ts = shift;
   return $ts->{"cache_".($_[0]||'y')};
+}
+
+##----------------------------------------------------------------------
+## $unit = $ts->unit()
+## $unit = $ts->unit($unit)
+##  + gets unit from $ts->{vars}{unit} || $ts->{unit} || 'y'
+##  + checks for unit support in $ts->{dstar}{hist_units}
+sub unit {
+  my $ts = shift;
+  my $unit = (shift
+	      || ($ts->{vars} ? $ts->{vars}{unit} : undef)
+	      || $ts->{unit}
+	      || 'y');
+
+  ##-- sanity check
+  my $units = ($ts->{units}
+	       || ($ts->{dstar} ? $ts->{dstar}{hist_units} : undef)
+	      );
+  $units = $ts->{units} = {map {($_=>undef)} split(' ',$units)} if (!ref($units));
+  if (defined($units) && !exists($units->{$unit})) {
+    die(__PACKAGE__, " Error: unsupported unit '$unit' should be one of (".join(' ',sort keys %$units).")");
+  }
+
+  return $unit;
 }
 
 ##==============================================================================
@@ -1242,7 +1271,7 @@ sub plotInitialize {
   ##-- sanity checks: slice unit
   $vars->{unit} = 'y' if ($vars->{sliceby}==0);
   $vars->{unit} ||= 'y';
-  my $unit = $vars->{unit};
+  my $unit = $ts->unit($vars->{unit});
   die("unknown slice unit '$unit' must be one of {y,m,d}") if ($unit !~ /^[ymd]$/);
   if ($unit ne 'y') {
     #die(__PACKAGE__, "::plotInitialize(): can't handle nonzero offset for slice unit '$unit'") if ($vars->{offset});
