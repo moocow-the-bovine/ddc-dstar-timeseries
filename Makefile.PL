@@ -23,6 +23,9 @@ WriteMakefile
 		    'PDL' => 0,			#v2.017
 		    'PDL::Stats'=>0,		#v0.70
 
+		    ##-- for fine-grained slices (unit=m|d)
+		    'Date::Calc' => 0,		#v6.4
+
 		    ##-- for testing
 		    'Test::More'=>0,		#v1.302075
 		   },

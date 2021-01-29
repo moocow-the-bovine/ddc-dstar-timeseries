@@ -52,7 +52,7 @@ Options:
   -h, -help          # this help message
   -d, -dir DIR       # base directory (default=\$ENV{DSTAR_TS_ROOT} || .)
   -o, -out OUTFILE   # output file (default=-: stdout)
-  -i, -initialize    # don't plot, just initialize cacheFile and gpVersionFile
+  -i, -initialize    # don't plot, just initialize cacheFile(s) and gpVersionFile
   -f, -force         # do/don't force re-initialization (default=don't)
   -D, -debug         # enable debugging (like -O=debug=255)
   -O, -opt OPT=VAL   # set DDC::Dstar::TimeSeries option (override dstar.rc, local.rc)
