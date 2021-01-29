@@ -27,7 +27,7 @@ use strict;
 ## Globals
 
 ##-- branched from dstar/corpus/web/dhist-plot.perl v0.37, svn r27690
-our $VERSION = '0.59';
+our $VERSION = '0.60_01';
 
 ## $USE_DB_FAST : bitmask for 'useDB': fast regex parsing heuristics
 our $USE_DB_FAST = 1;
@@ -884,7 +884,7 @@ sub ensureCache {
 ##  + does NOT auto-load or auto-populate
 sub cache {
   my $ts = shift;
-  return $ts->{"cache_".($_[0]||'y')};
+  return $ts->{"cache_".($_[0]||$ts->unit)};
 }
 
 ##----------------------------------------------------------------------
