@@ -140,6 +140,8 @@ our $USE_DB_REGEX = 0;
 ##    ymd2date => \&ymd2date,   ##-- $date = $ymd2date->($y,$m,$d)  # unused(?)
 ##    ymd2slice => \&ymd2slice, ##-- $slice = $ymd2slice->($y,$m,$d)
 ##    date2slice => \&date2slice,  ##-- $slice = $sliceof->($date)  # alias: 'sliceof'
+##    date2int => \&date2int,   ##-- $dint = $date2int->($date) # at $unit-granularity (identity for $unit='y')
+##    int2date => \&int2date,   ##-- $date = $int2date->($dint) # at $unit-granularity (identity for $unit='y')
 ##    sliceadd => \$sliceadd,   ##-- $slice_sum = $sliceadd->($date, $units) # implicitly uses $unit
 ##    ymd0 => \@ymd0,           ##-- ($y0,$m0,$d0) = @ymd0 : "origin" date for fine-slice computations (Mon 1-01-01; "Julian Day", also for Date::Calc::Date_to_Days)
 ##    alldates => \@alldates,   ##-- sorted list of all dates in $vars{xrange}, at $unit-resolution
@@ -1107,29 +1109,34 @@ sub unescapeDDC {
 
 ##----------------------------------------------------------------------
 ## $max = CLASS_OR_OBJECT->rowmax($key,\@rows)
+## $min = CLASS_OR_OBJECT->rowmax($key,\@rows,$cmp)
 ##  + returns max $_->{$key} foreach (@$rows), or -inf if none
 sub rowmax {
   my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
-  my ($key,$rows) = @_;
-  my $max = '-inf';
+  my ($key,$rows,$cmp) = @_;
+  $cmp //= sub { $_[0] <=> $_[1] }; ##-- default: numeric comparison
+  my ($max);
   foreach (@$rows) {
-    $max = $_->{$key} if (defined($_->{$key}) && $_->{$key} > $max);
+    $max = $_->{$key} if (!defined($max) || (defined($_->{$key}) && $cmp->($_->{$key},$max) > 0));
   }
-  return $max;
+  return $max // '-inf';
 }
 
 ##----------------------------------------------------------------------
 ## $min = CLASS_OR_OBJECT->rowmin($key,\@rows)
+## $min = CLASS_OR_OBJECT->rowmin($key,\@rows,$cmp)
 ##  + returns min $_->{$key} foreach (@$rows), or inf if none
 sub rowmin {
   my $that = UNIVERSAL::isa($_[0],__PACKAGE__) ? shift : __PACKAGE__;
-  my ($key,$rows) = @_;
-  my $min = 'inf';
+  my ($key,$rows,$cmp) = @_;
+  $cmp //= sub { $_[0] <=> $_[1] }; ##-- default: numeric comparison
+  my ($min);
   foreach (@$rows) {
-    $min = $_->{$key} if (defined($_->{$key}) && $_->{$key} < $min);
+    $min = $_->{$key} if (!defined($min) || (defined($_->{$key}) && $cmp->($_->{$key},$min) < 0));
   }
-  return $min;
+  return $min // 'inf';
 }
+
 
 ##----------------------------------------------------------------------
 ## $perl_regex  = CLASS_OR_OBJECT->ddcRegex($query_object)
@@ -1314,7 +1321,7 @@ sub plotInitialize {
   ## + TODO(?): figure out a good general way to assign "origin" date for units other than 'y'
   ##   - current code uses "Julian Day" Mon 1-01-01
   my ($sliceby,$offset) = @$vars{qw(sliceby offset)};
-  my ($ymd0, $date2ymd,$ymd2date, $ymd2slice,$date2slice, $sliceadd,$datecmp);
+  my ($ymd0, $date2ymd,$ymd2date, $date2int,$int2date, $ymd2slice,$date2slice, $sliceadd,$datecmp);
   $ymd0       = $vars->{ymd0}     = [1,1,1]; #[$date2ymd->('1970-01-01')]; ##-- origin date (for fine-slices)
   $date2ymd   = $vars->{date2ymd}  = \&dateSplit;
   $ymd2date   = $vars->{ymd2date}  = \&dateJoin;
@@ -1328,12 +1335,10 @@ sub plotInitialize {
     ##-- UNIT=d (days)
     $ymd2slice = sub { sprintf("%d-%02d-%02d", map {($_||1)} @_[0..2]) };
     $sliceadd  = sub { $ymd2slice->(Date::Calc::Add_Delta_Days($date2ymd->($_[0]), $_[1])) };
-    $date2slice = sub {
-      return $ymd2slice->(Date::Calc::Add_Delta_Days(@$ymd0,
-						     int((Date::Calc::Delta_Days(@$ymd0,$date2ymd->($_[0]))-$offset)/$sliceby)
-						     * $sliceby
-						     + $offset))
-    };
+    $date2int  = sub { Date::Calc::Delta_Days(@$ymd0,$date2ymd->($_[0])); };
+    $int2date  = sub { $ymd2slice->(Date::Calc::Add_Delta_Days(@$ymd0,$_[0])); };
+    $date2slice = sub { return $int2date->(int(($date2int->($_[0])-$offset)/$sliceby) * $sliceby + $offset); };
+
     #sub { $date2days->($a) <=> $date2days->($b) };
     $datecmp = \&dateCmp;
     if (($vars->{offset}//'') eq '' && $vars->{sliceby} && $xumin ne '*') {
@@ -1346,13 +1351,9 @@ sub plotInitialize {
     $ymd2slice = sub { sprintf("%d-%02d", map {($_||1)} @_[0..1]) };
     $sliceadd  = sub { $ymd2slice->(Date::Calc::Add_Delta_YM($date2ymd->($_[0]), 0,$_[1])) };
     my ($Dy,$Dm,$Dd);
-    $date2slice = sub {
-      ($Dy,$Dm,$Dd) = Date::Calc::Delta_YMD(@$ymd0,$date2ymd->($_[0]));
-      return $ymd2slice->( Date::Calc::Add_Delta_YM(@$ymd0, 0,
-						    int(($Dm+12*$Dy-$offset)/$sliceby)
-						    * $sliceby
-						    + $offset));
-    };
+    $date2int  = sub { ($Dy,$Dm,$Dd) = Date::Calc::Delta_YMD(@$ymd0,$date2ymd->($_[0])); return 12*$Dy + $Dm; };
+    $int2date  = sub { $ymd2slice->(Date::Calc::Add_Delta_YM(@$ymd0, 0,$_[0])); };
+    $date2slice = sub { return $int2date->(int(($date2int->($_[0])-$offset)/$sliceby) * $sliceby + $offset); };
     #sub { $date2days->($a) <=> $date2days->($b) };
     $datecmp = \&dateCmp;
     if (($vars->{offset}//'') eq '' && $vars->{sliceby} && $xumin ne '*') {
@@ -1365,6 +1366,7 @@ sub plotInitialize {
     ##-- UNIT=y (years)
     $ymd2slice = sub { $_[0] };
     $sliceadd  = sub { $_[0]+$_[1] };
+    $date2int  = $int2date = sub { $_[0] };
     $date2slice = sub { int(($_[0]-$offset)/$sliceby)*$sliceby + $offset; };
     $datecmp    = sub { $_[0] <=> $_[1] };
     if (($vars->{offset}//'') eq '' && $vars->{sliceby} && $xumin ne '*') {
@@ -1372,7 +1374,7 @@ sub plotInitialize {
       $offset = $vars->{offset} = $xumin % $vars->{sliceby};
     }
   }
-  @$vars{qw(ymd2slice date2slice sliceadd datecmp)} = ($ymd2slice,$date2slice,$sliceadd,$datecmp);
+  @$vars{qw(ymd2slice date2slice sliceadd date2int int2date datecmp)} = ($ymd2slice,$date2slice,$sliceadd,$date2int,$int2date,$datecmp);
   my $sliceof = $vars->{sliceof} = $date2slice; ##-- alias
 
   #my ($date2days,$days2date,$days2slice);
@@ -1687,6 +1689,7 @@ sub plotContent {
 
   my $vars = $ts->{vars};
   my ($pfmt,$rows,$bare,$classes) = @$vars{qw(pfmt rows bare classes)};
+  my $unit = $ts->unit;
 
   ##-- output
   my ($content);
@@ -1750,30 +1753,48 @@ sub plotContent {
     my ($set_xtics,$set_ytics);
     my ($xticmax, $yticmax) = (2000,1000);
     if ($bare) {
-      die(__PACKAGE__, "::plotContent(): can't handle 'bare'-plot for slice-unit '$vars->{unit}'")
-	if (($vars->{unit}||'y') ne 'y');
+      #die(__PACKAGE__, "::plotContent(): can't handle 'bare'-plot for slice-unit '$unit'") if ($unit ne 'y');
       my ($xmin,$xmax) = ($vars->{xrange} =~ /(.*):(.*)/ ? ($1,$2) : ('*','*'));
       my ($ymin,$ymax) = ($vars->{yrange} =~ /(.*):(.*)/ ? ($1,$2) : ('*','*'));
-      $xmin    = $ts->rowmin('date',$rows) if ($xmin eq '*');
-      $xmax    = $ts->rowmax('date',$rows) if ($xmax eq '*');
-      $xmax   += $vars->{slice};
+      my $xcmp = $unit eq 'y' ? undef : \&dateCmp;
+      $xmin    = $ts->rowmin('date',$rows,$xcmp) if ($xmin eq '*');
+      $xmax    = $ts->rowmax('date',$rows,$xcmp) if ($xmax eq '*');
+      $xmax    = $vars->{sliceadd}->($xmax, $vars->{sliceby});
       $ymax    = $ts->rowmax('val', $rows) if ($ymax eq '*');
       my $ticopts = "nomirror textcolor rgb \"#979797\"";
 
+      ##-- integer x limits ($unit-granularity, for easier arithmetic)
+      my ($date2int,$int2date) = @$vars{qw(date2int int2date)};
+      my $xmini = $date2int->($xmin);
+      my $xmaxi = $date2int->($xmax);
+
       $set_xtics = 'unset xtics;';
-      my @xtmax = qw(100 50 25 10 5 2 1);
-      my $xtrange = ($xmax-$xmin);
+      my @xtmax = ($unit eq 'd' ? qw(365 183 92 56 28 14 7 1)
+		   : ($unit eq 'm' ? qw(480 240 120 72 48 24 12 6 4 3 2 1)
+		      : qw(100 50 25 10 5 2 1) ##-- unit=y
+		      ));
+      my $xtrange = ($xmaxi-$xmini);
       my $nxtics  = 2;
       my (@xtics,@xticx);
       foreach (@xtmax) {
 	if ($xtrange/$_ >= $nxtics) {
 	  my $xtic    = $_;
-	  my $xticmin = $xtic * int($xmin/$xtic);
-	  $xticmax    = $xtic * int($xmax/$xtic + 0.5);
+	  my $xticmin = $xtic * int($xmini/$xtic);
+	  $xticmax    = $xtic * int($xmaxi/$xtic + 0.5);
 	  @xtics      = map { $xticmin + $_*$xtic } (0..int(($xticmax-$xticmin)/$xtic));
-	  @xticx      = map { $xtics[$_]-$_/$#xtics*$vars->{slice} } (0..$#xtics);
-	  $set_xtics  = "set xtics (".join(',', map {"\"$xtics[$_]\" $xticx[$_]"} (0..$#xtics)).") $ticopts;";
-	  #print STDERR "xmin=$xmin, xmax=$xmax, xtic=$xtic, xticmin=$xticmin, xticmax=$xticmax\n";##-- DEBUG
+	  @xticx      = map { $xtics[$_]-$_/$#xtics*$vars->{sliceby} } (0..$#xtics);
+	  $set_xtics  = ("set xtics ("
+			 .join(',',
+			       map {
+				 ('"'.$int2date->($xtics[$_]).'" '
+				  .($unit ne 'y' ? '"' : '')
+				  .$int2date->($xticx[$_])
+				  .($unit ne 'y' ? '"' : '')
+				 )
+			       } (0..$#xtics))
+			 .") $ticopts;"
+			);
+	  #print STDERR "xmin=$xmini ($xmin), xmax=$xmaxi ($xmax), xtic=$xtic, xticmin=$xticmin, xticmax=$xticmax\n";##-- DEBUG
 	  last;
 	}
       }
@@ -1802,7 +1823,7 @@ sub plotContent {
       ##-- bare plot: vertical bars (xBarClass pseudo-plot)
       unshift(@$classes, $ts->{xBarClass});
       $ymin = 0 if (($ymin//'') =~ /^\*?$/);
-      push(@$rows, map { {class=>$ts->{xBarClass},date=>$_,val=>$ymax} } @xticx);
+      push(@$rows, map { {class=>$ts->{xBarClass},date=>$int2date->($_),val=>$ymax} } @xticx);
     }
 
     ##-- gnuplot: set output
@@ -1823,7 +1844,7 @@ sub plotContent {
 
     ##-- gnuplot: x-axis format (especially for fine-slices)
     my ($set_xrange, $set_timefmt);
-    if (($vars->{unit}||'y') eq 'y') {
+    if ($unit eq 'y') {
       $set_xrange = qq(set xrange [$vars->{xrange}]);
       $set_timefmt = '';
     } else {
@@ -1833,7 +1854,7 @@ sub plotContent {
 		     .($vars->{xumax} eq '*' ? '*' : ('"'.$vars->{sliceof}->($vars->{xrmax}).'"'))
 		     .']'
 		    );
-      my $timefmt = $vars->{unit} eq 'm' ? '%Y-%m' : '%Y-%m-%d';
+      my $timefmt = $unit eq 'm' ? '%Y-%m' : '%Y-%m-%d';
       $set_timefmt = join('',
 			  map {"$_\n"}
 			  qq(set xdata time;),
@@ -1846,12 +1867,12 @@ sub plotContent {
     ##-- gnuplot: script
     my %pcmds = map {
       ($_ => ("\"-\""
-	      .(($vars->{unit}||'y') ne 'y' ? ' using 1:2' : '')
+	      .($unit ne 'y' ? ' using 1:2' : '')
 	      .($vars->{smooth} ? " smooth $vars->{smooth}" : '')
 	      ." title \"$_\""))
     } @$classes;
     $pcmds{$ts->{textClassU}} = "$pcmds{$ts->{textClassU}} w l ".($bare ? "lt 1 lw 3.5 lc rgb \"#0087c2\"" : "lt 7 lw 5") if ($vars->{grand});
-    $pcmds{$ts->{xBarClass}}  = "\"-\" w i lt 1 lw 0.75 lc rgb \"#979797\" notitle" if (exists $pcmds{$ts->{xBarClass}});
+    $pcmds{$ts->{xBarClass}}  = "\"-\" using 1:2 w i lt 1 lw 0.75 lc rgb \"#979797\" notitle" if (exists $pcmds{$ts->{xBarClass}});
     my $gp = join('',
 		  map {"$_\n"}
 		  qq(set style data $vars->{style};),
