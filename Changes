@@ -2,6 +2,10 @@
 ##
 ## Change log for perl distribution DDC::Dstar::TimeSeries
 
+v0.60 Wed, 03 Feb 2021 13:38:20 +0100 moocow
+	* added 'bare=1' support for fine-slice units (without "cunning & devious" xtic placement)
+	* fixed implicit default unit bug in $ts->cache()
+
 v0.59 Fri, 29 Jan 2021 07:39:53 +0100 moocow
 	* added support for fine-graned slice units (y|m|d)
 	  + merged from branch svn+ssh://svn.dwds.de/home/svn/dev/ddc-dstar-timeseries/branches/v0.58+fine-slice (-r33755:33944)
