@@ -1766,7 +1766,7 @@ sub plotContent {
       ##-- integer x limits ($unit-granularity, for easier arithmetic)
       my ($date2int,$int2date) = @$vars{qw(date2int int2date)};
       my $xmini = $date2int->($xmin);
-      my $xmaxi = $date2int->($xmax);
+      my $xmaxi = $date2int->($xmax)-1;
 
       $set_xtics = 'unset xtics;';
       my @xtmax = ($unit eq 'd' ? qw(365 183 92 56 28 14 7 1)
@@ -1782,7 +1782,10 @@ sub plotContent {
 	  my $xticmin = $xtic * int($xmini/$xtic);
 	  $xticmax    = $xtic * int($xmaxi/$xtic + 0.5);
 	  @xtics      = map { $xticmin + $_*$xtic } (0..int(($xticmax-$xticmin)/$xtic));
-	  @xticx      = map { $xtics[$_]-$_/$#xtics*$vars->{sliceby} } (0..$#xtics);
+	  @xticx      = ($unit eq 'y'
+			 ##-- cunning & devious fractional tic placement only for unit=y
+			 ? (map { $xtics[$_]-$_/$#xtics*$vars->{sliceby} } (0..$#xtics))
+			 : @xtics);
 	  $set_xtics  = ("set xtics ("
 			 .join(',',
 			       map {
